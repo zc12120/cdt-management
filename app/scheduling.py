@@ -475,4 +475,3 @@ def member_span_label(group: dict[str, Any], member: dict[str, Any], now_ts: flo
         # 复用通知那套写法：结束 00:00 显示成 24:00，不写「次日」
         return messages.shift_period("", start, end)
     return ""
-
