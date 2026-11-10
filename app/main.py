@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api, db, dns, repo, scheduler, security, settings
+from . import api, db, dns, lifecycle, outbox, probes, repo, scheduler, security, settings
+from .middleware import DeploymentBoundary
 
 log = logging.getLogger("cdt-management")
 
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
         openapi_url=None,
     )
     api.register(app)
+    app.add_middleware(DeploymentBoundary)
 
     static = _static_dir()
     if static is not None:
@@ -60,7 +62,8 @@ def create_app() -> FastAPI:
             # is_relative_to 才是真正的目录包含判断；字符串 startswith 会放过 static2/ 这类同前缀目录
             if full_path and candidate.is_file() and candidate.is_relative_to(static.resolve()):
                 return FileResponse(candidate)
-            return FileResponse(static / "index.html")
+            html = (static / 'index.html').read_text()
+            return HTMLResponse(html.replace('<head>', '<head><base href="' + settings.COOKIE_PATH + '">', 1))
     else:
 
         @app.get("/")
@@ -75,6 +78,9 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def _startup() -> None:  # noqa: ANN202
+        lifecycle.acquire()
+        outbox.start()
+        probes.start()
         # 老版本把域名直接写在换班组上，启动时接进绑定表（只接还没绑过的）
         try:
             config = repo.get_settings()
@@ -88,6 +94,10 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     def _shutdown() -> None:  # noqa: ANN202
         scheduler.stop()
+        outbox.stop()
+        probes.stop()
+        lifecycle.release()
+        db.close_all()
 
     return app
 
@@ -103,13 +113,8 @@ def _bootstrap_admin() -> None:
     if len(password) < 10:
         log.warning("CDT_ADMIN_PASSWORD 少于 10 个字符，忽略自动初始化")
         return
-    repo.set_settings(
-        {
-            "admin_username": username,
-            "admin_password": security.hash_password(password),
-            "initialized": "1",
-        }
-    )
+    if not repo.initialize_admin(username, password):
+        return
     log.info("已根据环境变量创建管理员 %s", username)
 
 
@@ -126,6 +131,7 @@ def run() -> None:
         port=settings.LISTEN_PORT,
         log_level=os.environ.get("CDT_LOG_LEVEL", "info").lower(),
         access_log=False,
+        proxy_headers=False,
     )
 
 

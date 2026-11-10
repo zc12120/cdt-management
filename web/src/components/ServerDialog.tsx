@@ -49,6 +49,7 @@ export default function ServerDialog({
     quota_gb: server?.quota_gb ?? 200,
     threshold_gb: server?.threshold_gb ?? Math.round((200 * defaultThresholdPercent) / 100),
     stop_mode: (server?.stop_mode ?? 'StopCharging') as StopMode,
+    traffic_policy: server?.traffic_policy ?? 'cost_guard',
     remark: server?.remark ?? '',
   }))
   const [error, setError] = useState('')
@@ -261,6 +262,16 @@ export default function ServerDialog({
           onChange={(event) => update('remark', event.target.value)}
           placeholder="可选"
         />
+      </div>
+
+      <div className="field">
+        <label htmlFor="traffic-policy">流量查询异常时</label>
+        <select id="traffic-policy" className="input" value={form.traffic_policy}
+          onChange={(event) => update('traffic_policy', event.target.value)}>
+          <option value="cost_guard">费用优先：读数过期后暂停自动开机</option>
+          <option value="availability">可用性优先：继续恢复，可能产生额外流量费</option>
+        </select>
+        <div className="hint">已知超限时两种策略都会停止恢复；流量是账号累计值，不是这台实例独占额度。</div>
       </div>
 
       {error && (

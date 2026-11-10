@@ -58,9 +58,9 @@ class ChownTreeTest(unittest.TestCase):
         logs = str(root / "logs")
         db = str(root / "cdt-management.db")
         stat_by_path = {
-            str(root): mock.Mock(st_uid=10001, st_gid=10001),
-            logs: mock.Mock(st_uid=0, st_gid=0),
-            db: mock.Mock(st_uid=0, st_gid=0),
+            str(root): mock.Mock(st_uid=10001, st_gid=10001, st_mode=0o40755),
+            logs: mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755),
+            db: mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755),
         }
         chowned: list[str] = []
 
@@ -82,7 +82,7 @@ class ChownTreeTest(unittest.TestCase):
         def fake_walk(top, topdown=True, followlinks=False):
             yield str(Path("/data")), [], []
 
-        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0)), \
+        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755)), \
              mock.patch.object(entry.os, "walk", side_effect=fake_walk), \
              mock.patch.object(entry.os, "chown", side_effect=PermissionError("EPERM"), create=True):
             changed = entry.chown_tree(Path("/data"), 10001, 10001)
@@ -96,7 +96,7 @@ class ChownTreeTest(unittest.TestCase):
         def fake_walk(top, topdown=True, followlinks=False):
             yield str(Path("/data")), ["link"], []
 
-        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0)), \
+        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755)), \
              mock.patch.object(entry.os, "walk", side_effect=fake_walk), \
              mock.patch.object(entry.os, "chown", side_effect=lambda p, u, g, **kw: calls.append(kw), create=True):
             entry.chown_tree(Path("/data"), 10001, 10001)
@@ -117,7 +117,7 @@ class ChownTreeScopeTest(unittest.TestCase):
         def fake_walk(*a, **kw):  # 浅模式不该调用 walk
             raise AssertionError("deep=False 时不该递归遍历")
 
-        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0)), \
+        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755)), \
              mock.patch.object(entry.os, "listdir", return_value=["logs", "cdt-management.db"]), \
              mock.patch.object(entry.os, "walk", side_effect=fake_walk), \
              mock.patch.object(entry.os, "chown", side_effect=lambda p, u, g, **kw: chowned.append(p), create=True):
@@ -128,7 +128,7 @@ class ChownTreeScopeTest(unittest.TestCase):
         self.assertEqual(len(chowned), 3)
 
     def test_missing_dir_does_not_raise(self) -> None:
-        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0)), \
+        with mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755)), \
              mock.patch.object(entry.os, "listdir", side_effect=PermissionError("EACCES")), \
              mock.patch.object(entry.os, "chown", create=True):
             self.assertEqual(entry.chown_tree(Path("/data"), 10001, 10001, deep=False), 1)
@@ -186,7 +186,7 @@ class MainTest(unittest.TestCase):
              mock.patch.object(entry, "POSIX", True), \
              mock.patch.object(entry.os, "geteuid", return_value=0, create=True), \
              mock.patch.object(entry.os, "getuid", return_value=1000, create=True), \
-             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0), create=True), \
+             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755), create=True), \
              mock.patch.object(entry.Path, "exists", return_value=True), \
              mock.patch.object(entry.Path, "is_dir", return_value=True), \
              mock.patch.object(entry, "chown_tree", side_effect=lambda *a, **kw: events.append("chown") or 1), \
@@ -226,7 +226,7 @@ class MainTest(unittest.TestCase):
              mock.patch.object(entry, "POSIX", True), \
              mock.patch.object(entry.os, "geteuid", return_value=0, create=True), \
              mock.patch.object(entry.os, "getuid", return_value=10001, create=True), \
-             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=10001, st_gid=10001), create=True), \
+             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=10001, st_gid=10001, st_mode=0o40755), create=True), \
              mock.patch.object(entry.Path, "exists", return_value=True), \
              mock.patch.object(entry.Path, "is_dir", return_value=True), \
              mock.patch.object(entry, "chown_tree", side_effect=lambda r, u, g, deep=True: deep_args.append(deep) or 0), \
@@ -246,7 +246,7 @@ class MainTest(unittest.TestCase):
              mock.patch.object(entry, "POSIX", True), \
              mock.patch.object(entry.os, "geteuid", return_value=0, create=True), \
              mock.patch.object(entry.os, "getuid", return_value=10001, create=True), \
-             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0), create=True), \
+             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=0, st_gid=0, st_mode=0o40755), create=True), \
              mock.patch.object(entry.Path, "exists", return_value=True), \
              mock.patch.object(entry.Path, "is_dir", return_value=True), \
              mock.patch.object(entry, "chown_tree", side_effect=lambda r, u, g, deep=True: deep_args.append(deep) or 3), \
@@ -264,7 +264,7 @@ class MainTest(unittest.TestCase):
              mock.patch.object(entry, "POSIX", True), \
              mock.patch.object(entry.os, "geteuid", return_value=0, create=True), \
              mock.patch.object(entry.os, "getuid", return_value=10001, create=True), \
-             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=10001, st_gid=10001), create=True), \
+             mock.patch.object(entry.os, "lstat", return_value=mock.Mock(st_uid=10001, st_gid=10001, st_mode=0o40755), create=True), \
              mock.patch.object(entry.Path, "exists", return_value=True), \
              mock.patch.object(entry.Path, "is_dir", return_value=True), \
              mock.patch.object(entry, "chown_tree", return_value=0), \

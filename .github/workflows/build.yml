@@ -25,10 +25,27 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/beacherz/cdt-management
+  IMAGE: ghcr.io/zc12120/cdt-management
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements-dev.txt
+      - run: npm ci --ignore-scripts && npm run build
+        working-directory: web
+      - run: python scripts/run_checks.py
   image:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read

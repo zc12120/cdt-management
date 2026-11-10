@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202 AS frontend
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -10,7 +10,7 @@ RUN npm run build
 # runtime 阶段**不能**写 --platform=$BUILDPLATFORM：那是构建机（amd64）的平台，
 # 会在 arm64 构建里塞进 amd64 的 python 镜像，产物标着 arm64 一跑就是
 # 「exec failed: Exec format error」。让它跟随 TARGETPLATFORM，arm64 镜像才是真 arm64。
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILT_AT=unknown
@@ -24,12 +24,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 COPY --from=frontend /src/app/static ./app/static
 COPY docker-entrypoint.py ./docker-entrypoint.py
+COPY scripts/backup.py ./scripts/backup.py
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin cdt \
     && mkdir -p /data \
@@ -46,11 +47,11 @@ LABEL org.opencontainers.image.title="CDT-Management" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.created="${BUILT_AT}" \
-      org.opencontainers.image.source="https://github.com/BeacherZ/cdt-management" \
+      org.opencontainers.image.source="https://github.com/zc12120/cdt-management" \
       cn.cdt-management.version="${VERSION}"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=4).status==200 else 1)"]
+    CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/ready',timeout=4).status==200 else 1)"]
 
 STOPSIGNAL SIGTERM
 

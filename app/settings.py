@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 APP_NAME = "cdt-management"
-VERSION = "1.3.11"
+VERSION = "1.4.0"
 
 DATA_DIR = Path(os.environ.get("CDT_DATA_DIR", "./data")).resolve()
 DB_PATH = DATA_DIR / "cdt-management.db"
@@ -23,7 +24,7 @@ BOOTSTRAP_PASSWORD = os.environ.get("CDT_ADMIN_PASSWORD", "").strip()
 BRAND = os.environ.get("CDT_BRAND", "CDT-Management")
 
 # 「关于」里检查更新用的仓库
-REPO = os.environ.get("CDT_REPO", "BeacherZ/cdt-management")
+REPO = os.environ.get("CDT_REPO", "zc12120/cdt-management")
 
 # 对账间隔（秒）。低于 30 秒会打爆阿里云 API 配额。
 RECONCILE_INTERVAL = max(30, int(os.environ.get("CDT_RECONCILE_INTERVAL", "60")))
@@ -79,12 +80,19 @@ MOCK_OP_DELAY = max(0.0, float(os.environ.get("CDT_MOCK_OP_DELAY", "3")))
 SESSION_COOKIE = "cdt_mgmt_session"
 CSRF_COOKIE = "cdt_mgmt_csrf"
 SESSION_TTL_SECONDS = 14 * 24 * 3600
+SECURE_COOKIES = os.environ.get("CDT_SECURE_COOKIES", "0") == "1"
+BASE_PATH = os.environ.get("CDT_BASE_PATH", "").rstrip("/")
+if BASE_PATH and not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", BASE_PATH):
+    raise ValueError("CDT_BASE_PATH must contain only URL path segments")
+COOKIE_PATH = BASE_PATH + "/" if BASE_PATH else "/"
+TRUSTED_PROXY_CIDRS = tuple(x.strip() for x in os.environ.get("CDT_TRUSTED_PROXIES", "").split(",") if x.strip())
+TRAFFIC_MAX_AGE = max(60, int(os.environ.get("CDT_TRAFFIC_MAX_AGE", "900")))
 
 
 def ensure_dirs() -> None:
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        LOG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError as exc:
         # 正常路径下 docker-entrypoint.py 已经把属主修好了，走到这里基本是
         # 只读挂载、NFS root_squash，或者有人绕过了入口脚本直接跑 app.main。

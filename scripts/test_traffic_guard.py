@@ -145,10 +145,10 @@ class EmptyReadingSameMonth(_Base):
         self.assertEqual(len(self._warnings()), 1, "连续多轮只留一条预警")
         self.assertEqual(self.started, [])
 
-    def test_under_limit_still_starts(self):
-        """没超限的机器不该被这条保护连坐：照常拉起，值也照旧。"""
+    def test_recent_under_limit_reading_still_starts(self):
+        """有效期内的已知读数可用于临时恢复；过期策略另有契约测试。"""
         sid = _make_server("没超限", traffic=10.0)
-        _add_sample_at(sid, 10.0, int(time.time()) - 3600)
+        _add_sample_at(sid, 10.0, int(time.time()) - 60)
         repo.add_keepalive(sid)
 
         self._keepalive_round()

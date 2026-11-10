@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import socket
 import threading
@@ -192,6 +193,7 @@ def _bss_request(account: dict, action: str, params: dict[str, str] | None = Non
     region, domain = bss_endpoint(str(account.get("site") or "china"))
     client = _client(account, region)
     request = CommonRequest()
+    request.set_protocol_type('https')
     request.set_domain(domain)
     request.set_version(BSS_VERSION)
     request.set_action_name(action)
@@ -259,7 +261,7 @@ def get_account_balance(account: dict, force: bool = False) -> dict[str, Any]:
     try:
         data, site = _bss_with_site_fallback(account, "QueryAccountBalance")
     except Exception as exc:  # noqa: BLE001
-        raise AliyunError(f"账户余额查询失败：{brief_error(exc)}") from exc
+        raise AliyunError(f"账户余额查询失败：{brief_error(exc)}") from None
 
     payload = data.get("Data") or {}
     try:
@@ -292,25 +294,37 @@ def get_instance_bill(account: dict, cycle: str) -> dict[str, Any]:
         "Granularity": "MONTHLY",
         "MaxResults": "300",
     }
-    try:
-        data, site = _bss_with_site_fallback(account, "DescribeInstanceBill", params)
-    except Exception as exc:  # noqa: BLE001
-        raise AliyunError(f"实例账单查询失败：{brief_error(exc)}") from exc
-
-    items = (data.get("Data") or {}).get("Items") or []
-    # 有的返回把数组包一层 {"Item": [...]}
-    if isinstance(items, dict):
-        items = items.get("Item") or []
-
-    total = 0.0
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+    from decimal import Decimal, InvalidOperation
+    total = Decimal('0')
+    seen = set()
+    site = str(account.get('site') or 'china')
+    for _ in range(1000):
         try:
-            total += float(item.get("PretaxAmount") or 0)
-        except (TypeError, ValueError):
-            continue
-    return {"total": round(total, 2), "site": site}
+            data, site = _bss_with_site_fallback(account, 'DescribeInstanceBill', params)
+        except Exception as exc:
+            raise AliyunError('实例账单查询失败：' + brief_error(exc)) from None
+        if data.get('Success') is False:
+            raise AliyunError('账单接口返回失败：' + _redact(str(data.get('Code') or 'unknown')))
+        payload = data.get('Data') or {}
+        items = payload.get('Items') or []
+        if isinstance(items, dict):
+            items = items.get('Item') or []
+        for item in items:
+            try:
+                value = Decimal(str(item.get('PretaxAmount') or 0))
+                if not value.is_finite():
+                    raise ValueError('non-finite bill')
+                total += value
+            except (InvalidOperation, ValueError, AttributeError):
+                raise AliyunError('账单金额格式无效，未返回不完整合计') from None
+        token = str(payload.get('NextToken') or '')
+        if not token:
+            return {'total': float(total.quantize(Decimal('0.01'))), 'site': site}
+        if token in seen:
+            raise AliyunError('账单分页重复，未返回不完整合计')
+        seen.add(token)
+        params['NextToken'] = token
+    raise AliyunError('账单分页超过安全上限')
 
 
 def _client(account: dict, region: str | None = None) -> "AcsClient":
@@ -322,6 +336,34 @@ def _client(account: dict, region: str | None = None) -> "AcsClient":
         region or account["region_id"],
         timeout=int(settings.HTTP_TIMEOUT),
     )
+
+
+def get_account_id(account: dict) -> str:
+    request = CommonRequest()
+    request.set_protocol_type('https')
+    request.set_domain('sts.aliyuncs.com')
+    request.set_version('2015-04-01')
+    request.set_action_name('GetCallerIdentity')
+    request.set_method('POST')
+    try:
+        data = json.loads(_client(account).do_action_with_exception(request))
+        value = str(data.get('AccountId') or '')
+        if not value.isdigit():
+            raise AliyunError('云账号身份未返回有效 AccountId')
+        return value
+    except Exception as exc:
+        raise AliyunError('云账号身份查询失败：' + brief_error(exc)) from None
+
+
+def _check_instance_response(raw: bytes, instance_id: str) -> None:
+    data = json.loads(raw)
+    rows = (data.get('InstanceResponses') or {}).get('InstanceResponse') or []
+    matches = [row for row in rows if row.get('InstanceId') == instance_id]
+    if len(matches) != 1:
+        raise AliyunError('云接口没有确认目标实例的操作结果')
+    code = str(matches[0].get('Code') or '')
+    if code not in ('200', 'Success', 'success'):
+        raise AliyunError('实例操作未被接受：' + _redact(code)[:100])
 
 
 class InstanceInfo:
@@ -426,6 +468,7 @@ def get_traffic_gb(account: dict) -> float | None:
         return float(_mock(account)["traffic"])
     client = _client(account, CDT_REGION)
     request = CommonRequest()
+    request.set_protocol_type('https')
     request.set_domain(CDT_DOMAIN)
     request.set_version("2021-08-13")
     request.set_action_name("ListCdtInternetTraffic")
@@ -434,11 +477,17 @@ def get_traffic_gb(account: dict) -> float | None:
         raw = client.do_action_with_exception(request)
         data = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        raise AliyunError(f"CDT 流量查询失败：{brief_error(exc)}") from exc
+        raise AliyunError(f"CDT 流量查询失败：{brief_error(exc)}") from None
     details = data.get("TrafficDetails") or []
     if not details:
         return None
-    total_bytes = sum(float(item.get("Traffic", 0) or 0) for item in details)
+    try:
+        values = [float(item.get('Traffic', 0) or 0) for item in details]
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError('invalid traffic')
+    except (TypeError, ValueError, AttributeError):
+        raise AliyunError('CDT 流量格式异常，未将其当成零流量') from None
+    total_bytes = sum(values)
     return total_bytes / (1024 ** 3)
 
 
@@ -455,6 +504,7 @@ def get_instance(account: dict) -> InstanceInfo:
             )
     client = _client(account)
     request = DescribeInstancesRequest.DescribeInstancesRequest()
+    request.set_protocol_type('https')
     request.set_InstanceIds(json.dumps([account["instance_id"]]))
     try:
         raw = client.do_action_with_exception(request)
@@ -470,7 +520,7 @@ def get_instance(account: dict) -> InstanceInfo:
     except AliyunError:
         raise
     except Exception as exc:
-        raise AliyunError(f"实例状态查询失败：{brief_error(exc)}") from exc
+        raise AliyunError(f"实例状态查询失败：{brief_error(exc)}") from None
 
     status = str(instance.get("Status") or "")
     mode = str(instance.get("StoppedMode") or "")
@@ -518,9 +568,10 @@ def start_instance(account: dict) -> None:
         return
     client = _client(account)
     request = StartInstancesRequest.StartInstancesRequest()
+    request.set_protocol_type('https')
     request.set_InstanceIds([account["instance_id"]])
     try:
-        client.do_action_with_exception(request)
+        _check_instance_response(client.do_action_with_exception(request), account["instance_id"])
     except Exception as exc:
         raw = f"{_error_code(exc)} {exc}"
         if any(hint in raw for hint in _NO_STOCK_HINTS):
@@ -529,8 +580,8 @@ def start_instance(account: dict) -> None:
             code = _error_code(exc) or "InsufficientInventory"
             raise AliyunError(
                 f"库存不足（{code}），{account.get('region_id') or '该地域'} 暂无可用实例库存"
-            ) from exc
-        raise AliyunError(f"启动实例失败：{brief_error(exc)}") from exc
+            ) from None
+        raise AliyunError(f"启动实例失败：{brief_error(exc)}") from None
 
 
 def stop_instance(account: dict, mode: str = "StopCharging", fallback: bool = False) -> str:
@@ -560,18 +611,19 @@ def stop_instance(account: dict, mode: str = "StopCharging", fallback: bool = Fa
         return mode
     client = _client(account)
     request = StopInstancesRequest.StopInstancesRequest()
+    request.set_protocol_type('https')
     request.set_InstanceIds([account["instance_id"]])
-    request.set_StoppedMode(mode)
+    request.set_StoppedMode("KeepCharging" if mode == "Stop" else mode)
     try:
-        client.do_action_with_exception(request)
+        _check_instance_response(client.do_action_with_exception(request), account["instance_id"])
         return mode
     except Exception as exc:
-        if fallback and mode != "Stop":
-            log.warning("节省停机失败，退化为普通停机: %s", exc)
-            request.set_StoppedMode("Stop")
+        if fallback and mode != "Stop" and any(hint in str(exc) for hint in ("Unsupported", "NotSupported", "InvalidParameter.StoppedMode")):
+            log.warning("节省停机不被支持，退化为普通停机: %s", brief_error(exc))
+            request.set_StoppedMode("KeepCharging")
             try:
-                client.do_action_with_exception(request)
+                _check_instance_response(client.do_action_with_exception(request), account["instance_id"])
                 return "Stop"
             except Exception as retry_exc:  # noqa: BLE001
-                raise AliyunError(f"停止实例失败：{brief_error(retry_exc)}") from retry_exc
-        raise AliyunError(f"停止实例失败：{brief_error(exc)}") from exc
+                raise AliyunError(f"停止实例失败：{brief_error(retry_exc)}") from None
+        raise AliyunError(f"停止实例失败：{brief_error(exc)}") from None

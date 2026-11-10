@@ -88,6 +88,18 @@ def safe_error(exc: Exception | str, config: dict[str, str] | None = None) -> st
 
 
 def send_all(config: dict[str, str], message: Message) -> dict[str, str]:
+    if not settings.DRY_RUN and enabled_channels(config):
+        from . import outbox
+        try:
+            outbox.enqueue(message)
+            return {'queue': 'queued'}
+        except Exception:
+            log.error('通知未能进入队列')
+            return {'queue': 'failed: 通知队列不可用'}
+    return deliver_all(config, message)
+
+
+def deliver_all(config: dict[str, str], message: Message) -> dict[str, str]:
     """逐个渠道发送，返回 {渠道: 结果}。换班通知里要回显这个结果。"""
     results: dict[str, str] = {}
     for channel in enabled_channels(config):
@@ -111,6 +123,8 @@ def result_text(results: dict[str, str], what: str = "通知") -> str:
     what 默认「通知」：设置页里这一栏就叫「通知」，事件里再叫「报告」是同一件事
     两个名字（通知消息的标题仍然叫「…报告」，那是发给人的消息本身）。
     """
+    if results.get('queue') == 'queued':
+        return f'{what}已进入投递队列'
     failed = [channel for channel, state in results.items() if state != "ok"]
     if failed:
         return f"{what}发送失败：{'、'.join(failed)}"

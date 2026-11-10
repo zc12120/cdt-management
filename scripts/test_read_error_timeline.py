@@ -411,14 +411,14 @@ class IdleReadFailure(unittest.TestCase):
         config = repo.get_settings()
         return shift.engine.reconcile_idle_limits(config, dt.datetime.now(TZ), set(), set())
 
-    def _break_traffic(self) -> None:
+    def _break_instance(self) -> None:
         def boom(server):  # noqa: ANN001, ARG001
-            raise aliyun.AliyunError("CDT 流量查询失败：网络不可达（cdt.aliyuncs.com）")
+            raise aliyun.AliyunError("ECS 状态查询失败：网络不可达（ecs.cn-hongkong.aliyuncs.com）")
 
-        aliyun.get_traffic_gb = boom
+        aliyun.get_instance = boom
 
     def test_failure_opens_event_and_recovery_closes_it(self) -> None:
-        self._break_traffic()
+        self._break_instance()
         self._reconcile()
 
         event = repo.pending_event(self.sid, "read_error")
@@ -426,7 +426,7 @@ class IdleReadFailure(unittest.TestCase):
         self.assertIn("读取失败", event["detail"])
         self.assertIn("网络不可达", event["detail"])
 
-        aliyun.get_traffic_gb = self._real_traffic
+        aliyun.get_instance = self._real_instance
         self._reconcile()
 
         self.assertIsNone(repo.pending_event(self.sid, "read_error"))
@@ -446,7 +446,7 @@ class IdleReadFailure(unittest.TestCase):
         读取事件会在同一轮末尾被当成孤儿关掉，然后下一轮再建一条 —— 每分钟
         开关一次，用户只看到一片闪烁的历史记录。
         """
-        self._break_traffic()
+        self._break_instance()
         shift.engine.reconcile_all()
         self.assertIsNotNone(
             repo.pending_event(self.sid, "read_error"),
@@ -454,7 +454,7 @@ class IdleReadFailure(unittest.TestCase):
         )
 
     def test_event_closed_after_server_deleted(self) -> None:
-        self._break_traffic()
+        self._break_instance()
         shift.engine.reconcile_all()
         repo.delete_server(self.sid)
         shift.engine.reconcile_all()

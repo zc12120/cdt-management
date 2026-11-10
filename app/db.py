@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import atexit
+from contextlib import contextmanager
 from typing import Any, Iterable
 
 from . import settings
@@ -11,6 +13,9 @@ from . import settings
 _local = threading.local()
 _init_lock = threading.Lock()
 _initialized = False
+_connections: set[sqlite3.Connection] = set()
+_connections_lock = threading.Lock()
+_generation = 0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -284,16 +289,32 @@ DEFAULTS: dict[str, str] = {
 
 def connect() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
-    if conn is not None:
+    if conn is not None and getattr(_local, 'generation', -1) == _generation:
         return conn
     settings.ensure_dirs()
-    conn = sqlite3.connect(str(settings.DB_PATH), timeout=15, isolation_level=None)
+    conn = sqlite3.connect(str(settings.DB_PATH), timeout=15, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=15000")
     _local.conn = conn
+    _local.generation = _generation
+    with _connections_lock:
+        _connections.add(conn)
     return conn
+
+
+def close_all() -> None:
+    """Called after workers stop; each worker still owns its own connection."""
+    global _generation
+    with _connections_lock:
+        for conn in _connections:
+            conn.close()
+        _connections.clear()
+        _generation += 1
+
+
+atexit.register(close_all)
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -377,6 +398,8 @@ def init_db() -> None:
         conn = connect()
         conn.executescript(SCHEMA)
         _migrate(conn)
+        from .storage.migrations import upgrade
+        upgrade(conn)
         for key, value in DEFAULTS.items():
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
@@ -400,3 +423,16 @@ def execute(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
 def insert(sql: str, params: Iterable[Any] = ()) -> int:
     cur = connect().execute(sql, tuple(params))
     return int(cur.lastrowid or 0)
+
+
+@contextmanager
+def transaction():
+    """Serialize short read/modify/write operations; never hold across cloud I/O."""
+    conn = connect()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise

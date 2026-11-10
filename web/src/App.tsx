@@ -29,6 +29,7 @@ import DNSView from './components/DNSView'
 import { Badge, Modal } from './components/ui'
 import { ownerLabel } from './owners'
 import { syncClock } from './time'
+import { useOverviewPolling } from './hooks/useOverviewPolling'
 
 type Phase = 'loading' | 'setup' | 'login' | 'ready' | 'fatal'
 type View = 'dashboard' | 'keepalive' | 'shift' | 'servers' | 'dns'
@@ -44,7 +45,6 @@ type ConfirmRequest = {
   run: () => Promise<void>
 }
 
-const REFRESH_MS = 10_000
 
 type NavLeaf = { key: View; label: string; icon: typeof Gauge }
 
@@ -135,9 +135,6 @@ export default function App() {
   const [busyKeepalive, setBusyKeepalive] = useState<number | null>(null)
   // 轮询连续失败两轮以上才置 true：偶发一次抖动静默跳过，别每分钟弹一次提示
   const [stale, setStale] = useState(false)
-  const polling = useRef<number | null>(null)
-  const pollingBusy = useRef(false)
-  const failedRounds = useRef(0)
   // settings 只在这里存一份，供 loadAll 判断「这次失败后还有没有旧值可用」
   const settingsRef = useRef<Settings | null>(null)
 
@@ -213,37 +210,7 @@ export default function App() {
     })()
   }, [loadAll])
 
-  useEffect(() => {
-    if (phase !== 'ready') {
-      if (polling.current) window.clearInterval(polling.current)
-      return
-    }
-    polling.current = window.setInterval(() => {
-      // 后端慢于轮询间隔时别再叠一个请求上去，等上一轮回来再说
-      if (pollingBusy.current) return
-      pollingBusy.current = true
-      void api<Overview>('/api/v1/overview')
-        .then((next) => {
-          setOverview(next)
-          failedRounds.current = 0
-          setStale(false)
-        })
-        .catch((error) => {
-          if (error instanceof APIError && error.status === 401) {
-            setPhase('login')
-            return
-          }
-          failedRounds.current += 1
-          if (failedRounds.current >= 2) setStale(true)
-        })
-        .finally(() => {
-          pollingBusy.current = false
-        })
-    }, REFRESH_MS)
-    return () => {
-      if (polling.current) window.clearInterval(polling.current)
-    }
-  }, [phase])
+  useOverviewPolling(phase === 'ready', setOverview, () => setPhase('login'), setStale)
 
   async function reconcile() {
     if (reconciling) return

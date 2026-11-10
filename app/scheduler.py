@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 
-from . import aliyun, billing, dns, messages, notify, repo, settings
+from . import aliyun, billing, ddns, dns, lifecycle, messages, notify, repo, settings
 from .shift import engine, keepalive_window, _timezone
 
 log = logging.getLogger("cdt-management.scheduler")
@@ -63,6 +63,13 @@ def start() -> None:
 def stop() -> None:
     _stop.set()
     _wake.set()
+    for thread in (_thread, _confirm_thread):
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=30)
+
+
+def readiness() -> dict:
+    return lifecycle.readiness((_thread, _confirm_thread), _interval())
 
 
 def request_fast_reconcile(seconds: float = _FAST_WINDOW) -> None:
@@ -121,7 +128,9 @@ def _loop() -> None:
     while not _stop.is_set():
         try:
             engine.reconcile_all()
+            lifecycle.heartbeat('tick')
         except Exception:  # noqa: BLE001
+            lifecycle.heartbeat('tick', 'round failed')
             log.exception("对账轮次异常")
 
         try:
@@ -173,6 +182,7 @@ def _confirm_loop() -> None:
     while not _stop.is_set():
         try:
             _confirm_pending_events()
+            lifecycle.heartbeat('confirm')
         except Exception:  # noqa: BLE001
             log.exception("事件状态确认轮次异常")
         _stop.wait(EVENT_POLL_INTERVAL)

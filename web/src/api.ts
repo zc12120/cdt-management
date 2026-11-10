@@ -44,7 +44,8 @@ export async function api<T>(path: string, init: ApiInit = {}): Promise<T> {
 
   let response: Response
   try {
-    response = await fetch(path, {
+    const basePath = new URL(document.baseURI).pathname.replace(/\/$/, '')
+    response = await fetch(`${basePath}${path}`, {
       ...rest,
       headers,
       credentials: 'same-origin',

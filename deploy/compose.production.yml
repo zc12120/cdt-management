@@ -1,0 +1,38 @@
+services:
+  cdt-management:
+    image: ${CDT_IMAGE:?Set an immutable tested image tag or digest}
+    container_name: cdt-management
+    user: "10001:10001"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 384m
+    ports: ["127.0.0.1:8282:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      CDT_DATA_DIR: /data
+      CDT_BASE_PATH: ${CDT_BASE_PATH:?Set a random URL prefix}
+      CDT_SECURE_COOKIES: "1"
+      CDT_TRUSTED_PROXIES: ${CDT_TRUSTED_PROXIES:-}
+      CDT_EVENT_RETAIN_DAYS: "7"
+      CDT_RECONCILE_INTERVAL: "60"
+      CDT_PROBE_CONFIG: /config/probes.json
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/ready',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

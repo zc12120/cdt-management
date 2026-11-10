@@ -1,3 +1,23 @@
+# CDT-Management maintained fork
+
+This fork adds transactional setup and control operations, account-scoped usage,
+independent cloud/traffic observations, readiness, optional proxy-health probes,
+secure deployment prefixes and bounded notification delivery.
+
+- [Refactor and deployment acceptance](docs/refactor-plan.md)
+- [Production deployment and rollback](deploy/README.md)
+- [Original review and reproducible findings](docs/review-20261110.md)
+
+Run `python scripts/run_checks.py` after installing `requirements-dev.txt` and
+building `web/`. Cloud actions in checks use isolated dry-run state.
+
+The original documentation below describes upstream features. Metering is now
+account-scoped: **multiple ECS instances in one account do not each receive an
+independent 200 GiB allowance**. Cloud metering is delayed and is not a real-time
+spending cap. For secure publication use the production deployment instructions.
+
+---
+
 # CDT-Management
 
 **Docker 搭建的网页管理面板：阿里云 CDT 抢占式实例的单机保活 + 多机联合换班 + DDNS + 通知。**
@@ -98,13 +118,13 @@
 ### 方式一：一键脚本（最省事）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zc12120/cdt-management/main/install.sh | bash
 ```
 
 内部走【方式三】的 `docker run`；没装 Docker 会自动装。换端口或换目录自行加参数：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/install.sh | PORT=18282 DIR=/srv/cdt bash
+curl -fsSL https://raw.githubusercontent.com/zc12120/cdt-management/main/install.sh | PORT=18282 DIR=/srv/cdt bash
 ```
 
 **升级**：重跑同一条命令，会先比对版本，已是最新就不动容器；有新版本才删容器重建，数据不动。
@@ -114,7 +134,7 @@ curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/instal
 ```yaml
 services:
   cdt-management:
-    image: ghcr.io/beacherz/cdt-management:latest
+    image: ghcr.io/zc12120/cdt-management:latest
     container_name: cdt-management
     restart: unless-stopped
     init: true
@@ -150,13 +170,13 @@ docker run -d --name cdt-management --restart unless-stopped --init \
   -e TZ=Asia/Shanghai \
   -e CDT_DATA_DIR=/data \
   -v /opt/docker/cdt-management:/data \
-  ghcr.io/beacherz/cdt-management:latest
+  ghcr.io/zc12120/cdt-management:latest
 ```
 
 **升级**：
 
 ```bash
-docker pull ghcr.io/beacherz/cdt-management:latest
+docker pull ghcr.io/zc12120/cdt-management:latest
 docker rm -f cdt-management
 # 再把上面那条 docker run 原样粘一次，挂载目录不动，数据不会丢
 ```
@@ -168,10 +188,10 @@ Windows 挂载路径写成 `-v D:/docker/cdt-management:/data`。
 
 ```bash
 # 只删本项目（容器、镜像和数据目录一起删）
-curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/install.sh | UNINSTALL=1 bash
+curl -fsSL https://raw.githubusercontent.com/zc12120/cdt-management/main/install.sh | UNINSTALL=1 bash
 
 # 连 Docker 一起卸（本机所有容器和镜像都会没）
-curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/install.sh | UNINSTALL=docker bash
+curl -fsSL https://raw.githubusercontent.com/zc12120/cdt-management/main/install.sh | UNINSTALL=docker bash
 ```
 
 两条都会问一次 `yes`，输对了才动手。

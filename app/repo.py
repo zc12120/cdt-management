@@ -7,7 +7,7 @@ import math
 import time
 from typing import Any
 
-from . import db, security
+from . import accounts, db, security
 
 SENSITIVE_SETTINGS = {
     "admin_password",
@@ -16,6 +16,8 @@ SENSITIVE_SETTINGS = {
     "notify_tg_token",
     "notify_mail_password",
     "notify_wh_headers",
+    "notify_wh_url",
+    "notify_tg_proxy",
 }
 
 
@@ -75,6 +77,18 @@ def set_settings(values: dict[str, str]) -> None:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def initialize_admin(username: str, password: str) -> bool:
+    """Exactly one bootstrap request owns initialization, including across processes."""
+    encoded = security.encrypt(security.hash_password(password))
+    with db.transaction() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='initialized'").fetchone()
+        if row is not None and row[0] == "1":
+            return False
+        for key, value in {"admin_username": username, "admin_password": encoded, "initialized": "1"}.items():
+            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    return True
 
 
 def get_flag(key: str) -> bool:
@@ -174,7 +188,8 @@ SERVER_COLUMNS = (
     "id, label, access_key_id, access_key_secret, region_id, site, instance_id, "
     "quota_gb, threshold_gb, remark, traffic_used, instance_status, stop_mode, stopped_mode, "
     "public_ip, traffic_checked_at, status_checked_at, monthly_cost, balance_amount, "
-    "billing_currency, billing_cycle, billing_updated_at, billing_error, created_at, sort_order"
+    "billing_currency, billing_cycle, billing_updated_at, billing_error, created_at, sort_order, "
+    "credential_id, account_id, traffic_error, status_error, traffic_policy"
 )
 
 # 站点取值只有两个；其余一律归一到中国站，避免脏数据流到 endpoint 解析里
@@ -201,6 +216,8 @@ def _server_row(row: Any, decrypt_secret: bool = False) -> dict[str, Any]:
     item["site"] = normalize_site(item.get("site"))
     item["stop_mode"] = normalize_stop_mode(item.get("stop_mode"))
     secret = item.pop("access_key_secret", "") or ""
+    if item.get("credential_id"):
+        secret = accounts.encrypted_secret(int(item["credential_id"]))
     item["secret_configured"] = bool(secret)
     if decrypt_secret:
         # 调用阿里云时必须拿明文，否则签出来的是密文
@@ -269,6 +286,9 @@ def upsert_server(payload: dict[str, Any]) -> int:
     threshold = _gb_value(payload.get("threshold_gb"), 188.0, "阈值")
     remark = str(payload.get("remark") or "").strip()
     stop_mode_raw = payload.get("stop_mode")
+    traffic_policy = payload.get('traffic_policy')
+    if traffic_policy is not None and traffic_policy not in ('cost_guard', 'availability'):
+        raise ValueError('Invalid traffic policy')
     # 没传（老前端 / 只改别处的接口）就保持原值；新建时落到默认的节省停机
     stop_mode = (
         normalize_stop_mode(stop_mode_raw) if stop_mode_raw is not None else ""
@@ -285,7 +305,7 @@ def upsert_server(payload: dict[str, Any]) -> int:
 
     if server_id:
         existing = db.query_one(
-            "SELECT access_key_id, access_key_secret, site, instance_id, stop_mode FROM servers WHERE id=?",
+            "SELECT access_key_id, access_key_secret, site, instance_id, stop_mode, credential_id FROM servers WHERE id=?",
             (server_id,),
         )
         if existing is None:
@@ -298,7 +318,8 @@ def upsert_server(payload: dict[str, Any]) -> int:
         if stop_mode_raw is None:
             # 同理：只调用其它字段的接口不能把停机模式重置回默认
             stop_mode = normalize_stop_mode(existing["stop_mode"])
-        encrypted = security.encrypt(sk) if sk else existing["access_key_secret"]
+        encrypted = security.encrypt(sk) if sk else accounts.encrypted_secret(int(existing["credential_id"]))
+        credential_id, account_id = accounts.store_credential(ak, encrypted, site)
         # 换了账号 / 实例 / 站点，旧账单就不是这台机器的了，必须清掉重查
         billing_changed = (
             ak != existing["access_key_id"]
@@ -330,19 +351,26 @@ def upsert_server(payload: dict[str, Any]) -> int:
                 server_id,
             ),
         )
+        db.execute("UPDATE servers SET credential_id=?,account_id=?,access_key_secret='' WHERE id=?", (credential_id, account_id, server_id))
+        if "traffic_policy" in payload:
+            policy = str(payload["traffic_policy"])
+            if policy not in ("cost_guard", "availability"):
+                raise ValueError("Invalid traffic policy")
+            db.execute("UPDATE servers SET traffic_policy=? WHERE id=?", (policy, server_id))
         return server_id
 
     if not ak:
         raise ValueError("AccessKey ID 不能为空")
     if not sk:
         raise ValueError("新建服务器必须填写 AccessKey Secret")
-    return db.insert(
+    credential_id, account_id = accounts.store_credential(ak, security.encrypt(sk), site)
+    server_id = db.insert(
         "INSERT INTO servers(label, access_key_id, access_key_secret, region_id, site, instance_id, "
         "quota_gb, threshold_gb, remark, stop_mode, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (
             label or ak[-6:],
             ak,
-            security.encrypt(sk),
+            "",
             region,
             site,
             instance,
@@ -353,6 +381,11 @@ def upsert_server(payload: dict[str, Any]) -> int:
             int(time.time()),
         ),
     )
+
+    db.execute("UPDATE servers SET credential_id=?,account_id=? WHERE id=?", (credential_id, account_id, server_id))
+    if traffic_policy is not None:
+        db.execute('UPDATE servers SET traffic_policy=? WHERE id=?', (traffic_policy, server_id))
+    return server_id
 
 
 def reorder_servers(ordered_ids: list[int]) -> None:
@@ -1203,24 +1236,25 @@ def add_event_progress(event_id: int, text: str, *, once: bool = False) -> None:
     if not event_id:
         return
     now = int(time.time())
-    row = db.query_one("SELECT progress FROM events WHERE id=?", (event_id,))
-    if row is None:
-        return
-    try:
-        progress = json.loads(row["progress"] or "[]")
-    except Exception:
-        progress = []
-    if progress and progress[-1].get("text") == text:
-        return
-    if once and any(step.get("text") == text for step in progress):
-        return
-    progress.append({"ts": now, "text": text})
-    if len(progress) > PROGRESS_MAX_STEPS:
-        progress = progress[-PROGRESS_MAX_STEPS:]
-    db.execute(
-        "UPDATE events SET progress=? WHERE id=?",
-        (json.dumps(progress, ensure_ascii=False), event_id),
-    )
+    with db.transaction() as conn:
+        row = conn.execute("SELECT progress FROM events WHERE id=?", (event_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            progress = json.loads(row["progress"] or "[]")
+        except Exception:
+            progress = []
+        if progress and progress[-1].get("text") == text:
+            return
+        if once and any(step.get("text") == text for step in progress):
+            return
+        progress.append({"ts": now, "text": text})
+        if len(progress) > PROGRESS_MAX_STEPS:
+            progress = progress[-PROGRESS_MAX_STEPS:]
+        conn.execute(
+            "UPDATE events SET progress=? WHERE id=?",
+            (json.dumps(progress, ensure_ascii=False), event_id),
+        )
 
 
 def get_event(event_id: int) -> dict[str, Any] | None:
@@ -1381,6 +1415,8 @@ def _parse_progress(raw: str) -> list[dict[str, Any]]:
 def prune_events(days: int) -> None:
     now = int(time.time())
     cutoff = now - days * 86400
+    db.execute("UPDATE control_operations SET state='finished',updated_at=? WHERE event_id IN (SELECT id FROM events WHERE status!='running') AND state IN ('reserved','submitted')", (now,))
+    db.execute("DELETE FROM control_operations WHERE state NOT IN ('reserved','submitted') AND updated_at<?", (cutoff,))
     # 还在 running 的事件不删：保活 / 换班事件本来就允许跨天，一台机器持续起不来
     # （长期欠费 / 长期无库存）时，事件可以合法地挂上十几天；按 ts 一刀切会把它
     # 在界面上凭空删掉，「已尝试 N 次」也从 1 重新数。

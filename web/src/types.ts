@@ -70,6 +70,10 @@ export type Server = {
   quota_gb: number
   threshold_gb: number
   remark: string
+  account_id?: string
+  traffic_error?: string
+  status_error?: string
+  traffic_policy?: string
   traffic_used: number | null
   traffic_percent: number | null
   instance_status: string
@@ -176,6 +180,7 @@ export type EventItem = {
 }
 
 export type Overview = {
+  account_usage?: { total_gib: number; verified_accounts: number; unresolved_instances: number }
   now: string
   now_ts: number
   /** 后端时区下的「YYYY-MM-DD HH:MM」，页面头直接显示，不在前端二次格式化 */

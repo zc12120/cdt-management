@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # CDT-Management 一键安装（内部走 docker run，不需要 docker compose 插件）
 #
-#   curl -fsSL https://raw.githubusercontent.com/BeacherZ/cdt-management/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zc12120/cdt-management/main/install.sh | bash
 #
 # 可覆盖的变量：
 #   PORT=18282            宿主机端口，默认 8282
 #   DIR=/srv/cdt          数据目录，默认 /opt/docker/cdt-management
 #   NO_DOCKER_INSTALL=1   没装 Docker 时不要自动装，直接报错退出
 #   FORCE=1               已是最新版本也强制重建容器
-#   IMAGE=...             自备镜像地址（默认 ghcr.io/beacherz/cdt-management:latest）
+#   IMAGE=...             自备镜像地址（默认 ghcr.io/zc12120/cdt-management:latest）
 #   UNINSTALL=1           卸载本项目（容器、镜像、数据目录一起删，要确认）
 #   UNINSTALL=docker      连 Docker 一起卸
 #
@@ -16,7 +16,7 @@
 # 非交互环境（没有终端）不询问，直接比对版本升级。
 set -euo pipefail
 
-IMAGE="${IMAGE:-ghcr.io/beacherz/cdt-management:latest}"
+IMAGE="${IMAGE:-ghcr.io/zc12120/cdt-management:latest}"
 NAME="cdt-management"
 PORT="${PORT:-8282}"
 DIR="${DIR:-/opt/docker/cdt-management}"
@@ -226,12 +226,28 @@ fi
 docker info >/dev/null 2>&1 ||
     die "Docker 没在运行。先 systemctl start docker，再重跑。"
 
+DEPLOY_PREVIOUS=""
+DEPLOY_BACKUP=""
+rollback_deployment() {
+    warn "Candidate failed; restoring the previous container and matching data"
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    if [ -n "$DEPLOY_BACKUP" ]; then
+        rm -f "$DIR/cdt-management.db-wal" "$DIR/cdt-management.db-shm"
+        cp -p "$DEPLOY_BACKUP/cdt-management.db" "$DIR/cdt-management.db"
+        cp -p "$DEPLOY_BACKUP/master.key" "$DIR/master.key"
+        chown 10001:10001 "$DIR/cdt-management.db" "$DIR/master.key"
+    fi
+    if [ -n "$DEPLOY_PREVIOUS" ]; then
+        docker rename "$DEPLOY_PREVIOUS" "$NAME"
+        docker start "$NAME" >/dev/null
+    fi
+}
+
 say "拉取镜像"
 if ! docker pull "$IMAGE"; then
-    warn "从 ghcr.io 拉取失败（国内网络常见），改用 Docker Hub 同名镜像"
-    IMAGE="${DOCKERHUB_IMAGE:-beacherz/cdt-management:latest}"
-    docker pull "$IMAGE" || die "镜像拉取失败。可以自己 build（见 README），或用 IMAGE=你的镜像地址 重跑。"
+    die "Configured fork image could not be pulled. Refusing to switch publishers."
 fi
+
 LATEST="$(image_version)"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -243,7 +259,22 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
         exit 0
     fi
     say "已安装：当前 $(short "$CUR") → 最新 $(short "$LATEST")，开始升级"
-    docker rm -f "$NAME" >/dev/null
+    if [ -f "$DIR/cdt-management.db" ] && [ -f "$DIR/master.key" ]; then
+        DEPLOY_BACKUP="${DIR}.backups/$(date +%Y%m%dT%H%M%S)"
+        mkdir -p "${DIR}.backups"
+        chmod 700 "${DIR}.backups"
+        docker stop "$NAME" >/dev/null
+        if ! docker run --rm --user 0:0 --entrypoint python \
+            -v "$DIR:/data:ro" -v "${DIR}.backups:/backups" "$IMAGE" \
+            /app/scripts/backup.py /data "/backups/$(basename "$DEPLOY_BACKUP")"; then
+            docker start "$NAME" >/dev/null
+            die "Consistent backup failed; original container resumed"
+        fi
+    else
+        docker stop "$NAME" >/dev/null
+    fi
+    DEPLOY_PREVIOUS="${NAME}-previous-$(date +%Y%m%dT%H%M%S)"
+    docker rename "$NAME" "$DEPLOY_PREVIOUS"
 fi
 
 say "数据目录：$DIR"
@@ -257,11 +288,12 @@ say "启动容器"
 if ! docker run -d --name "$NAME" --restart unless-stopped \
     --init \
     --log-opt max-size=10m --log-opt max-file=3 \
-    -p "${PORT}:8080" \
+    -p "127.0.0.1:${PORT}:8080" \
     -e TZ=Asia/Shanghai \
     -e CDT_DATA_DIR=/data \
     -v "${DIR}:/data" \
     "$IMAGE" >/dev/null; then
+    rollback_deployment
     die "容器没起来。多半是端口 ${PORT} 被占用：换一个端口重跑，例如 PORT=18282"
 fi
 
@@ -269,7 +301,7 @@ say "等待面板响应"
 ready=0
 for _ in $(seq 1 40); do
     # 走 --noproxy，免得宿主机设了 http_proxy 把本地探活也代理走
-    if curl -fsS --noproxy '*' "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+    if curl -fsS --noproxy '*' "http://127.0.0.1:${PORT}/api/ready" >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -282,5 +314,6 @@ if [ "$ready" = 1 ]; then
     say "首次打开会引导设置管理员账号"
     say "重跑这条命令可以升级或卸载"
 else
-    say "容器已启动，但 40 秒内没等到响应。看日志：docker logs $NAME"
+    rollback_deployment
+    die "Candidate readiness failed; previous version restored"
 fi

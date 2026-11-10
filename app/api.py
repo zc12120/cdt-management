@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import aliyun, billing, ddns, dns, messages, notify, repo, security, settings
+from . import accounts, aliyun, billing, ddns, dns, messages, notify, repo, security, settings
 from .shift import (
     PHASE_BREAKER,
     PHASE_ERROR,
@@ -33,6 +33,24 @@ from .shift import (
     keepalive_window,
     member_span_label,
     next_switch_at,
+)
+
+from .http import auth
+from .http.auth import (
+    LOGIN_MAX_FAILURES,
+    LOGIN_WINDOW,
+    _attach_session,
+    _client_ip,
+    _current_user,
+    _is_initialized,
+    _is_private_peer,
+    _login_failures,
+    _rate_limited,
+    _record_failure,
+    _reset_failures,
+    _session_epoch,
+    require_admin,
+    require_csrf
 )
 
 log = logging.getLogger("cdt-management.api")
@@ -231,7 +249,8 @@ def _config_from_draft(payload: dict[str, Any]) -> dict[str, str]:
     if tg:
         put_bool("notify_tg_enabled", tg.get("enabled"))
         put("notify_tg_chat_id", tg.get("chat_id"))
-        put("notify_tg_proxy", tg.get("proxy"))
+        if tg.get('proxy'):
+            put("notify_tg_proxy", tg.get("proxy"))
         if tg.get("token"):
             cfg["notify_tg_token"] = str(tg["token"])
 
@@ -249,7 +268,8 @@ def _config_from_draft(payload: dict[str, Any]) -> dict[str, str]:
     wh = payload.get("webhook") or {}
     if wh:
         put_bool("notify_wh_enabled", wh.get("enabled"))
-        put("notify_wh_url", wh.get("url"))
+        if wh.get('url'):
+            put("notify_wh_url", wh.get("url"))
         put("notify_wh_method", wh.get("method"))
         put("notify_wh_body", wh.get("body"))
         if wh.get("headers"):
@@ -257,10 +277,6 @@ def _config_from_draft(payload: dict[str, Any]) -> dict[str, str]:
 
     return cfg
 
-_login_failures: dict[str, list[float]] = {}
-_login_lock = threading.Lock()
-LOGIN_WINDOW = 300
-LOGIN_MAX_FAILURES = 8
 
 # 概览页的事件窗口：一次最多给这么多条。前端先露 8 条，
 # 剩下的点「显示更多事件」再展开，不用每次翻页都重新请求。
@@ -270,48 +286,6 @@ OVERVIEW_EVENT_LIMIT = 20
 # --------------------------------------------------------------------------
 # 鉴权
 # --------------------------------------------------------------------------
-
-def _is_initialized() -> bool:
-    return repo.get_setting("initialized") == "1"
-
-
-def _session_epoch() -> int:
-    try:
-        return int(repo.get_setting("session_epoch") or 0)
-    except Exception:
-        return 0
-
-
-def _current_user(request: Request) -> str | None:
-    token = request.cookies.get(settings.SESSION_COOKIE, "")
-    user = security.read_session(token, _session_epoch())
-    if not user:
-        return None
-    # 退出登录过的那张票据即使被翻出来也不认：会话本身无状态，光删 cookie
-    # 吊销不了，票据在 14 天有效期内仍然能用。
-    try:
-        if repo.is_session_revoked(security.session_id(token)):
-            return None
-    except Exception:  # noqa: BLE001
-        # 黑名单查不到（库锁住之类）不该把整个请求打成 500：签名本身已经验过了
-        log.warning("会话黑名单查询失败，按未吊销处理", exc_info=True)
-    return user
-
-
-def require_admin(request: Request) -> str:
-    user = _current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="未登录")
-    return user
-
-
-def require_csrf(request: Request) -> None:
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return
-    cookie = request.cookies.get(settings.CSRF_COOKIE, "")
-    header = request.headers.get("x-cdt-csrf", "")
-    if not cookie or cookie != header:
-        raise HTTPException(status_code=403, detail="CSRF 校验失败")
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -542,6 +516,11 @@ def server_summary(
         "threshold_gb": _finite_gb(server.get("threshold_gb")),
         "remark": server.get("remark") or "",
         "traffic_used": used,
+        "account_id": server.get("account_id") or "",
+        "traffic_scope": "account",
+        "traffic_error": server.get("traffic_error") or "",
+        "status_error": server.get("status_error") or "",
+        "traffic_policy": server.get("traffic_policy") or "cost_guard",
         "traffic_percent": round((used or 0) / quota * 100, 2) if used is not None else None,
         "instance_status": server.get("instance_status") or "Unknown",
         "stop_mode": repo.normalize_stop_mode(server.get("stop_mode")),
@@ -632,6 +611,13 @@ def _group_payload(
 # --------------------------------------------------------------------------
 
 def register(app: FastAPI) -> None:
+    auth.register(app)
+
+    @app.get('/api/v1/service-health')
+    def service_health(user: str = Depends(require_admin)):
+        from . import db, probes
+        probes.initialize()
+        return {'items': [dict(row) for row in db.query('SELECT * FROM service_health ORDER BY server_id')]}
     @app.exception_handler(ValueError)
     def _value_error(_request: Request, exc: ValueError):  # noqa: ANN202
         return _error(400, "invalid_request", str(exc))
@@ -645,84 +631,14 @@ def register(app: FastAPI) -> None:
     def _unhandled(_request: Request, exc: Exception):  # noqa: ANN202
         # 兜住所有没被上面 handler 接住的异常（阿里云调用、SQLite 锁、出网失败等），
         # 别把 Python 栈和内部路径直接甩给前端，也别让请求变成一句无信息的 500。
-        log.exception("未处理异常")
+        log.error("未处理异常 type=%s", type(exc).__name__)
         return _error(500, "internal_error", "服务器内部错误，请查看日志")
 
     # -- 系统 -----------------------------------------------------------
-    @app.get("/api/health")
-    def health():  # noqa: ANN202
-        return {"status": "ok", "version": settings.VERSION}
 
-    @app.get("/api/v1/system/init-status")
-    def init_status():  # noqa: ANN202
-        return {
-            "initialized": _is_initialized(),
-            "brand": settings.BRAND,
-            "version": settings.VERSION,
-            "repo": settings.REPO,
-        }
-
-    @app.post("/api/v1/setup")
-    def setup(payload: dict[str, Any]):  # noqa: ANN202
-        if _is_initialized():
-            raise HTTPException(status_code=409, detail="系统已初始化")
-        username = str(payload.get("username") or "").strip()
-        password = str(payload.get("password") or "")
-        if len(username) < 3:
-            raise ValueError("用户名至少 3 个字符")
-        if len(password) < 10:
-            raise ValueError("密码至少 10 个字符")
-        repo.set_settings(
-            {
-                "admin_username": username,
-                "admin_password": security.hash_password(password),
-                "initialized": "1",
-            }
-        )
-        repo.add_event("system", messages.ev("系统初始化完成"), f"已初始化 / 管理员 {username}")
-        response = JSONResponse({"ok": True})
-        _attach_session(response, username)
-        return response
 
     # -- 登录 -----------------------------------------------------------
-    @app.post("/api/v1/auth/login")
-    def login(request: Request, payload: dict[str, Any]):  # noqa: ANN202
-        client = _client_ip(request)
-        if _rate_limited(client):
-            raise HTTPException(status_code=429, detail="尝试过于频繁，请 5 分钟后再试")
 
-        username = str(payload.get("username") or "").strip()
-        password = str(payload.get("password") or "")
-        stored_user = repo.get_setting("admin_username")
-        stored_hash = repo.get_setting("admin_password")
-
-        if username != stored_user or not security.verify_password(password, stored_hash):
-            _record_failure(client)
-            raise HTTPException(status_code=401, detail="用户名或密码不正确")
-
-        _reset_failures(client)
-        response = JSONResponse({"ok": True, "username": username})
-        _attach_session(response, username)
-        return response
-
-    @app.post("/api/v1/auth/logout")
-    def logout(request: Request, user: str = Depends(require_admin)):  # noqa: ANN202, ARG001
-        require_csrf(request)
-        # 把这张票据拉黑到它自己过期为止：只删 cookie 的话，票据在有效期内
-        # 依然能用（复制出来的副本照样放行）。只吊销当前这张，别把手机/平板
-        # 上的登录一起踢掉 —— 那是改密码才该发生的事。
-        token = request.cookies.get(settings.SESSION_COOKIE, "")
-        repo.revoke_session(
-            security.session_id(token), int(time.time()) + settings.SESSION_TTL_SECONDS
-        )
-        response = JSONResponse({"ok": True})
-        response.delete_cookie(settings.SESSION_COOKIE, path="/")
-        response.delete_cookie(settings.CSRF_COOKIE, path="/")
-        return response
-
-    @app.get("/api/v1/auth/me")
-    def me(user: str = Depends(require_admin)):  # noqa: ANN202
-        return {"username": user}
 
     # -- 总览 -----------------------------------------------------------
     @app.get("/api/v1/overview")
@@ -753,6 +669,7 @@ def register(app: FastAPI) -> None:
             "servers": [
                 server_summary(s, managed, cards) for s in repo.list_servers()
             ],
+            "account_usage": accounts.overview(repo.list_servers()),
             "keepalives": [
                 {
                     **item,
@@ -1066,7 +983,8 @@ def register(app: FastAPI) -> None:
                 "enabled": config.get("notify_tg_enabled") == "1",
                 "token_configured": bool(config.get("notify_tg_token")),
                 "chat_id": config.get("notify_tg_chat_id") or "",
-                "proxy": config.get("notify_tg_proxy") or "",
+                "proxy": "",
+                "proxy_configured": bool(config.get("notify_tg_proxy")),
             },
             "email": {
                 "enabled": config.get("notify_mail_enabled") == "1",
@@ -1079,7 +997,8 @@ def register(app: FastAPI) -> None:
             },
             "webhook": {
                 "enabled": config.get("notify_wh_enabled") == "1",
-                "url": config.get("notify_wh_url") or "",
+                "url": "",
+                "url_configured": bool(config.get("notify_wh_url")),
                 "method": config.get("notify_wh_method") or "POST",
                 "headers_configured": bool(config.get("notify_wh_headers")),
                 "body": config.get("notify_wh_body") or "",
@@ -1192,7 +1111,10 @@ def register(app: FastAPI) -> None:
         if tg:
             put_bool("notify_tg_enabled", tg.get("enabled"))
             put_str("notify_tg_chat_id", tg.get("chat_id"))
-            put_str("notify_tg_proxy", tg.get("proxy"))
+            if tg.get('proxy'):
+                put_str("notify_tg_proxy", tg.get("proxy"))
+            if tg.get('clear_proxy') is True:
+                put_str('notify_tg_proxy', '')
             if tg.get("token"):
                 updates["notify_tg_token"] = str(tg["token"])
 
@@ -1210,7 +1132,10 @@ def register(app: FastAPI) -> None:
         wh = payload.get("webhook") or {}
         if wh:
             put_bool("notify_wh_enabled", wh.get("enabled"))
-            put_str("notify_wh_url", wh.get("url"))
+            if wh.get('url'):
+                put_str("notify_wh_url", wh.get("url"))
+            if wh.get('clear_url') is True:
+                put_str('notify_wh_url', '')
             put_str("notify_wh_method", wh.get("method"))
             put_str("notify_wh_body", wh.get("body"))
             if wh.get("headers"):
@@ -1302,80 +1227,7 @@ def register(app: FastAPI) -> None:
 # 会话 cookie
 # --------------------------------------------------------------------------
 
-def _attach_session(response: JSONResponse, username: str, epoch: int | None = None) -> None:
-    token = security.issue_session(username, _session_epoch() if epoch is None else epoch)
-    response.set_cookie(
-        settings.SESSION_COOKIE,
-        token,
-        max_age=settings.SESSION_TTL_SECONDS,
-        httponly=True,
-        samesite="lax",
-        path="/",
-    )
-    response.set_cookie(
-        settings.CSRF_COOKIE,
-        security.new_csrf_token(),
-        max_age=settings.SESSION_TTL_SECONDS,
-        httponly=False,
-        samesite="lax",
-        path="/",
-    )
-
 
 # --------------------------------------------------------------------------
 # 登录限速
 # --------------------------------------------------------------------------
-
-def _is_private_peer(host: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return addr.is_private or addr.is_loopback or addr.is_link_local
-
-
-def _client_ip(request: Request) -> str:
-    """登录限速用的客户端标识。
-
-    直接暴露时直连对端就是真实来源，X-Forwarded-For 一概不信 —— 否则攻击者
-    每次随便填一个 IP 就绕过了限速。只有当直连对端是内网/回环地址（说明前面
-    有反向代理，Docker 默认桥接也一样）时才取 XFF 的第一段，否则所有人共用
-    网关那一个 IP，别人连错 8 次，管理员跟着被锁 5 分钟。
-    """
-    peer = (request.client.host if request.client else "") or "unknown"
-    if _is_private_peer(peer):
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        try:
-            ipaddress.ip_address(forwarded)
-        except ValueError:
-            pass
-        else:
-            return forwarded
-    return peer
-
-
-def _rate_limited(client: str) -> bool:
-    now = time.time()
-    with _login_lock:
-        # 顺手清掉过期条目：只清理当前 key 的话，字典会跟着来访 IP 一直长
-        if len(_login_failures) > 256:
-            for key in [
-                k for k, v in _login_failures.items() if not v or now - v[-1] >= LOGIN_WINDOW
-            ]:
-                _login_failures.pop(key, None)
-        attempts = [t for t in _login_failures.get(client, []) if now - t < LOGIN_WINDOW]
-        if attempts:
-            _login_failures[client] = attempts
-        else:
-            _login_failures.pop(client, None)
-        return len(attempts) >= LOGIN_MAX_FAILURES
-
-
-def _record_failure(client: str) -> None:
-    with _login_lock:
-        _login_failures.setdefault(client, []).append(time.time())
-
-
-def _reset_failures(client: str) -> None:
-    with _login_lock:
-        _login_failures.pop(client, None)

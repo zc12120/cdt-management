@@ -474,9 +474,9 @@ class LoginRateLimitClient(_Base):
         request = _request("8.8.8.8", forwarded="198.51.100.7")
         self.assertEqual(api._client_ip(request), "8.8.8.8")  # noqa: SLF001
 
-    def test_private_peer_uses_forwarded_for(self):
+    def test_private_peer_ignores_untrusted_forwarded_for(self):
         request = _request("172.18.0.1", forwarded="198.51.100.7, 172.18.0.1")
-        self.assertEqual(api._client_ip(request), "198.51.100.7")  # noqa: SLF001
+        self.assertEqual(api._client_ip(request), "172.18.0.1")  # noqa: SLF001
 
     def test_invalid_forwarded_for_falls_back_to_peer(self):
         request = _request("127.0.0.1", forwarded="not-an-ip")
