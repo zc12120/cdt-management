@@ -1,0 +1,12 @@
+[
+  {
+    "mode": "Stop",
+    "dry_run": true,
+    "code": "DRYRUN.SUCCESS"
+  },
+  {
+    "mode": "KeepCharging",
+    "dry_run": true,
+    "code": "DRYRUN.SUCCESS"
+  }
+]

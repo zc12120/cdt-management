@@ -1,0 +1,22 @@
+{
+  "upstream_commit": "3ccf6a7547e2ddb1d68756dd5e3c92fd253093e4",
+  "upstream_version": "1.3.11",
+  "python": "3.13.18",
+  "node": "22.22.2",
+  "unit_test_files": 23,
+  "unit_tests": 349,
+  "unit_passed": 345,
+  "unit_errors": 4,
+  "unit_error_file": "scripts/test_entrypoint.py",
+  "unit_error_reason": "os.lstat mock supplies invalid st_mode to pathlib.resolve",
+  "http_smoke_passed": 141,
+  "http_smoke_failed": 0,
+  "frontend_build": "passed",
+  "npm_audit_known_vulnerabilities": 0,
+  "pip_audit_known_vulnerabilities": 0,
+  "python_dependency_count": 26,
+  "smoke_process_rss_kib": 89860,
+  "cloud_control_executed": false,
+  "cloud_dry_run_only": true,
+  "runtime_changes_in_this_branch": false
+}

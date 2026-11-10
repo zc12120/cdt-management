@@ -1,0 +1,44 @@
+{
+  "cdt_failure_skips_ecs": {
+    "status_queries": 0,
+    "start_calls": 0
+  },
+  "ordinary_stop_wire_mode": "Stop",
+  "batch_failure_not_raised": {
+    "start_returned_none": true,
+    "stop_reported_mode": "StopCharging"
+  },
+  "same_account_usage_repeated": {
+    "per_instance_gib": [
+      100.0,
+      100.0
+    ],
+    "dashboard_sum_gib": 200.0
+  },
+  "concurrent_manual_stop": {
+    "cloud_stop_calls": 2
+  },
+  "concurrent_initialization": {
+    "setup_statuses": [
+      200,
+      200
+    ],
+    "both_sessions_still_authorized": true
+  },
+  "private_peer_xff_trust": {
+    "original_ip_blocked": true,
+    "changed_xff_blocked": false
+  },
+  "health_without_scheduler": {
+    "status_code": 200,
+    "status": "ok"
+  },
+  "bill_next_page_ignored": {
+    "query_count": 1,
+    "reported_total": 1.0
+  },
+  "concurrent_progress_lost": {
+    "submitted_steps": 2,
+    "stored_steps": 1
+  }
+}

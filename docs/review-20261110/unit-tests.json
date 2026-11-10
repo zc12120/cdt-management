@@ -1,0 +1,117 @@
+[
+  {
+    "file": "test_confirm_polling.py",
+    "exit": 0,
+    "tests": 4
+  },
+  {
+    "file": "test_ddns_resilience.py",
+    "exit": 0,
+    "tests": 12
+  },
+  {
+    "file": "test_dns.py",
+    "exit": 0,
+    "tests": 60
+  },
+  {
+    "file": "test_entrypoint.py",
+    "exit": 1,
+    "tests": 20
+  },
+  {
+    "file": "test_event_flow.py",
+    "exit": 0,
+    "tests": 5
+  },
+  {
+    "file": "test_group_guard.py",
+    "exit": 0,
+    "tests": 27
+  },
+  {
+    "file": "test_group_lifecycle.py",
+    "exit": 0,
+    "tests": 8
+  },
+  {
+    "file": "test_group_state.py",
+    "exit": 0,
+    "tests": 11
+  },
+  {
+    "file": "test_keepalive_limit.py",
+    "exit": 0,
+    "tests": 5
+  },
+  {
+    "file": "test_keepalive_retry.py",
+    "exit": 0,
+    "tests": 11
+  },
+  {
+    "file": "test_keepalive_window.py",
+    "exit": 0,
+    "tests": 32
+  },
+  {
+    "file": "test_manual_consistency.py",
+    "exit": 0,
+    "tests": 7
+  },
+  {
+    "file": "test_messages.py",
+    "exit": 0,
+    "tests": 31
+  },
+  {
+    "file": "test_month_cycle.py",
+    "exit": 0,
+    "tests": 12
+  },
+  {
+    "file": "test_month_day_failover.py",
+    "exit": 0,
+    "tests": 9
+  },
+  {
+    "file": "test_notify.py",
+    "exit": 0,
+    "tests": 9
+  },
+  {
+    "file": "test_read_error_timeline.py",
+    "exit": 0,
+    "tests": 15
+  },
+  {
+    "file": "test_scheduler_tick.py",
+    "exit": 0,
+    "tests": 12
+  },
+  {
+    "file": "test_security_hardening.py",
+    "exit": 0,
+    "tests": 11
+  },
+  {
+    "file": "test_settle_events.py",
+    "exit": 0,
+    "tests": 4
+  },
+  {
+    "file": "test_shift_flow.py",
+    "exit": 0,
+    "tests": 15
+  },
+  {
+    "file": "test_stall_failover.py",
+    "exit": 0,
+    "tests": 21
+  },
+  {
+    "file": "test_traffic_guard.py",
+    "exit": 0,
+    "tests": 8
+  }
+]
