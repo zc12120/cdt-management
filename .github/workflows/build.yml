@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: pip install -r requirements-dev.txt
+      - run: pip install --require-hashes -r requirements-dev.lock
       - run: npm ci --ignore-scripts && npm run build
         working-directory: web
       - run: python scripts/run_checks.py
