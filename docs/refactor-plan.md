@@ -13,8 +13,10 @@ Sequence: implement and verify locally → push the reviewed implementation to t
 - [x] Versioned migration, consistent backup/restore and regression coverage
 - [x] Fork release configuration, locked dependencies and CI
 - [x] Random URL prefix, reverse-proxy authentication and panel authentication
-- [ ] Push verified implementation before deployment
-- [ ] 1Panel-managed SFO website, exact Cloudflare DNS and TLS verification
-- [ ] Controlled ECS stop → automatic restart → real Reality request
+- [x] Push verified implementation before deployment
+- [x] 1Panel-managed SFO website, exact Cloudflare DNS and TLS verification
+- [x] Controlled ECS stop → automatic restart → real Reality request
+
+Runtime release: `9222c0fa41dd6027fc472c2a8086ba60d1bdc36d`. Both main-branch CI jobs passed. The subsequent checklist update is documentation-only; the deployed image remains tied to that verified runtime commit. Detailed deployment evidence and access information are retained privately outside this repository.
 
 No claim of zero possible defects. Release gates cover the observed failures and explicitly exercised failure modes. Preserve a rollback artifact and report limits of real spot-capacity recovery.

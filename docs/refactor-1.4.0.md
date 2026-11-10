@@ -25,4 +25,4 @@ Validation on Python 3.13.18 / Node 22.22.2:
 
 No production credentials, instance IDs, domain paths, authentication material or real deployment state are committed. Configuration and backup files remain operator-only outside Git. The implementation cannot guarantee available spot capacity, zero cloud-metering delay, exactly-once external notification delivery, or absence of all latent bugs. Those boundaries are explicit rather than reported as successful checks.
 
-Deployment is gated on this commit being pushed to the user's fork. Production readiness, TLS/authentication checks, recovery after a controlled ECS stop and actual proxy egress are separate subsequent acceptance steps; their result belongs in the private deployment ledger.
+The runtime release `9222c0fa41dd6027fc472c2a8086ba60d1bdc36d` was pushed to the user's fork before deployment. Production readiness, TLS/authentication checks, recovery after a controlled ECS stop and actual proxy egress all passed. Detailed results and infrastructure identifiers are retained in the private deployment ledger. Subsequent documentation-only acceptance updates do not change the deployed runtime image.
