@@ -7,6 +7,7 @@ secure deployment prefixes and bounded notification delivery.
 - [Refactor and deployment acceptance](docs/refactor-plan.md)
 - [Production deployment and rollback](deploy/README.md)
 - [Original review and reproducible findings](docs/review-20261110.md)
+- [2026-11-11 维护日志与30秒巡检验收](docs/maintenance-20261111.md)
 
 Run `python scripts/run_checks.py` after installing `requirements-dev.txt` and
 building `web/`. Cloud actions in checks use isolated dry-run state.
