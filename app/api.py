@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import accounts, aliyun, billing, ddns, dns, messages, notify, repo, security, settings
+from .keepalive_window import KeepaliveWindow
 from .shift import (
     PHASE_BREAKER,
     PHASE_ERROR,
@@ -407,50 +408,9 @@ def _validate_group_timetable(payload: dict[str, Any]) -> None:
 
 
 def _keepalive_window(payload: dict[str, Any]) -> tuple[str, str, int, int]:
-    """解析并校验单机保活的运行窗口，返回 (start_time, end_time, start_day, end_day)。
-
-    两个维度都只允许「全空（不限）」或「成对且同向」：
-
-    - 时段必须在同一天内（end > start，不跨零点；结束填 00:00 表示到 24:00，
-      与联合换班同义）：跨零点会让「今天 22:00–06:00」到底算今天还是明天变得没法
-      在界面上说清，用户要跨天就拆成两个保活轮不到，不如直接不支持。
-    - 日期必须在同一个月内（1 ≤ start ≤ end ≤ 31，不跨月）：跨月同理，而且每个月
-      天数不同，跨月边界没法用两个固定数字表达。
-
-    只填一半（比如只填开始时刻）当错误处理，不做静默兜底 —— 静默兜底的结果是
-    界面显示着时段、引擎却当没配，这种「表里不一」最难排查。
-    """
-    start_raw = str(payload.get("start_time") or "").strip()
-    end_raw = str(payload.get("end_time") or "").strip()
-    if bool(start_raw) != bool(end_raw):
-        raise ValueError("运行时段的起止时刻要成对填写，或都留空（全天）")
-    if start_raw:
-        if not repo.is_hhmm(start_raw) or not repo.is_hhmm(end_raw):
-            raise ValueError("运行时段要用 HH:MM 格式，例如 08:00")
-        start_min = int(start_raw[:2]) * 60 + int(start_raw[3:])
-        end_min = int(end_raw[:2]) * 60 + int(end_raw[3:])
-        # 结束 00:00 就是「到当天午夜」，与联合换班同一套写法；其余仍要求 end > start
-        if end_min == 0 and start_min > 0:
-            end_min = 24 * 60
-        if end_min <= start_min:
-            raise ValueError(
-                "运行时段的结束时刻必须晚于开始时刻（不支持跨零点；结束填 00:00 表示到 24:00）"
-            )
-
-    try:
-        start_day = int(payload.get("start_day") or 0)
-        end_day = int(payload.get("end_day") or 0)
-    except (TypeError, ValueError):
-        raise ValueError("运行日期必须是 1–31 的数字") from None
-    if bool(start_day) != bool(end_day):
-        raise ValueError("运行日期的起止日要成对填写，或都留空（全月）")
-    if start_day:
-        if not (1 <= start_day <= 31 and 1 <= end_day <= 31):
-            raise ValueError("运行日期必须在 1–31 之间")
-        if end_day < start_day:
-            raise ValueError("运行日期的结束日不能早于开始日（不支持跨月）")
-
-    return start_raw, end_raw, start_day, end_day
+    """Use the same window parser as the scheduler, rejecting malformed writes."""
+    window = KeepaliveWindow.parse(payload)
+    return window.start_time, window.end_time, window.start_day, window.end_day
 
 
 def _managed_map() -> dict[int, dict[str, Any]]:

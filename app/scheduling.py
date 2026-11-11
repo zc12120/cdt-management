@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 from . import messages, repo
+from .keepalive_window import KeepaliveWindow
 log = logging.getLogger('cdt-management.schedule')
 _TZ_WARNED = False
 _TZ_CACHE: dict[str, Any] = {'at': 0.0, 'name': ''}
@@ -25,54 +26,13 @@ def _hhmm_to_minutes(value: str) -> int:
 
 
 def keepalive_window(item: dict[str, Any], now: dt.datetime) -> tuple[bool, str]:
-    """单机保活的运行窗口：(此刻能不能跑, 人话摘要)。
+    """Evaluate daily/monthly limits; overnight hours belong to the start date.
 
-    两个维度取交集：时段（每天几点到几点，**不跨零点**，结束写 00:00 表示到 24:00）
-    与日期（每月几号到几号，**不跨月**）。都为空 = 全天全月，等价于没设窗口。
-
-    日期超过当月天数时按月末截断：2 月填「1–31 日」就是 1 号到 28/29 号，
-    否则那个月一天都匹配不上，机器整个月不干活。
-
-    配置读不懂（手改库写坏的半截配置）时按「不限」处理并照常保活 —— 宁可多跑，
-    不能因为一行坏配置把用户的机器钉死在停机状态。
+    Invalid stored dimensions retain the previous unlimited fallback. API writes
+    use this same parser in strict mode and reject incomplete or invalid input.
     """
-    start_raw = str(item.get("start_time") or "").strip()
-    end_raw = str(item.get("end_time") or "").strip()
-    start = _hhmm_to_minutes(start_raw) if start_raw else -1
-    end = _hhmm_to_minutes(end_raw) if end_raw else -1
-    # 结束 00:00 = 当天到午夜（24:00），和联合换班是同一套写法：
-    # 「08:00–00:00」表示整段跑到午夜，不是零长度。
-    if end == 0 and start > 0:
-        end = 24 * 60
-    timed = start >= 0 and end > start
-
-    # 手改库写坏的半截配置按「不限」处理：int() 遇到文本会抛，不能让一行坏配置
-    # 把整轮巡检掀翻（注释承诺的是「照常保活」，不是让机器全停）。
-    try:
-        day_start = int(item.get("start_day") or 0)
-        day_end = int(item.get("end_day") or 0)
-    except (TypeError, ValueError):
-        day_start = day_end = 0
-    dated = 1 <= day_start <= day_end <= 31
-
-    parts: list[str] = []
-    if timed:
-        # 摘要按面板习惯写 24:00：写「每天 08:00–00:00」会被读成零长度
-        end_label = "24:00" if end == 24 * 60 else end_raw
-        parts.append(f"每天 {start_raw}–{end_label}")
-    if dated:
-        parts.append(f"{day_start}–{day_end} 日")
-    summary = " · ".join(parts)
-
-    if timed:
-        minute = now.hour * 60 + now.minute
-        if not (start <= minute < end):
-            return False, summary
-    if dated:
-        month_days = calendar.monthrange(now.year, now.month)[1]
-        if not (min(day_start, month_days) <= now.day <= min(day_end, month_days)):
-            return False, summary
-    return True, summary
+    window = KeepaliveWindow.parse(item, strict=False)
+    return window.contains(now), window.summary
 
 
 def _window_bracket(window_text: str) -> str:

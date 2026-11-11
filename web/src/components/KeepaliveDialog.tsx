@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { HeartPulse, TriangleAlert } from 'lucide-react'
 import { post } from '../api'
-import { minutesOf } from '../keepalive'
+import { isOvernight, minutesOf, windowSummary } from '../keepalive'
 import type { Keepalive, Server } from '../types'
 import { Modal, Segmented, Switch } from './ui'
 
@@ -55,11 +55,12 @@ export default function KeepaliveDialog({ server, item, onClose, onSaved }: Prop
         setError('运行时段要填完整的起止时刻，或者切回「不限」')
         return
       }
-      // 结束填 00:00 = 到当天午夜（与联合换班一致）；其余仍要求结束晚于开始
-      const endMinutes =
-        endTime === '00:00' && minutesOf(startTime) > 0 ? 24 * 60 : minutesOf(endTime)
-      if (endMinutes <= minutesOf(startTime)) {
-        setError('结束时刻要晚于开始时刻（不支持跨零点；结束填 00:00 表示到 24:00）')
+      if (minutesOf(startTime) < 0 || minutesOf(endTime) < 0) {
+        setError('运行时段要用 HH:MM 格式，例如 13:00')
+        return
+      }
+      if (minutesOf(startTime) === minutesOf(endTime)) {
+        setError('起止时刻不能相同；全天运行请选「不限」')
         return
       }
       start_time = startTime
@@ -173,8 +174,13 @@ export default function KeepaliveDialog({ server, item, onClose, onSaved }: Prop
           </div>
         )}
         <div className="hint">
-          每天在这个时间段内运行；不接受跨零点，结束填 00:00 表示到 24:00，要跑一整天就用「不限」。
+          每天按面板时区运行。结束早于开始表示到次日；结束填 00:00 表示当天 24:00。全天运行请选择「不限」。
         </div>
+        {timeMode === 'custom' && startTime && endTime && startTime !== endTime && (
+          <div className="hint">
+            {windowSummary({ start_time: startTime, end_time: endTime, start_day: 0, end_day: 0 })}，窗口外自动停机。
+          </div>
+        )}
       </div>
 
       <div className="field">
@@ -205,6 +211,9 @@ export default function KeepaliveDialog({ server, item, onClose, onSaved }: Prop
           </div>
         )}
         <div className="hint">每月这个日期段内运行（1 号到月末，不跨月）；超过当月天数按月末截断。</div>
+        {timeMode === 'custom' && isOvernight(startTime, endTime) && (
+          <div className="hint">跨天时段按开始日期计算；结束日的班次会运行到次日结束时刻。</div>
+        )}
       </div>
 
       {error && (

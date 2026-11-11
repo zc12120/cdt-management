@@ -9,7 +9,7 @@
    已自动恢复运行」会让人以为机器被阿里云回收了。
 3. **事件里能看到「单机保活窗口暂停 / 单机保活窗口恢复」**，概览一句结论，展开是过程。
 4. **停机模式按实例设置走**：选普通停机就发 Stop，不再写死节省停机。
-5. 配置写坏（半截时段、跨零点）时按「不限」处理，不能把机器钉死在停机状态。
+5. 跨零点时段凌晨归属开始日期；配置写坏时仍按「不限」处理。
 
 跑法：python scripts/test_keepalive_window.py
 """
@@ -86,6 +86,45 @@ class WindowMath(unittest.TestCase):
         self.assertFalse(shift.keepalive_window(item, _at(3))[0], "凌晨不在窗口内")
         self.assertEqual(shift.keepalive_window(item, _at(12))[1], "每天 08:00–24:00")
 
+    def test_overnight_window_boundaries(self):
+        item = self._item(start_time="13:00", end_time="04:00")
+        for hour, minute, expected in [(0, 0, True), (3, 59, True), (4, 0, False),
+                                       (12, 59, False), (13, 0, True), (23, 59, True)]:
+            with self.subTest(hour=hour, minute=minute):
+                self.assertEqual(shift.keepalive_window(item, _at(hour, minute))[0], expected)
+        self.assertEqual(shift.keepalive_window(item, _at(12))[1], "每天 13:00–次日 04:00")
+
+    def test_overnight_date_range_belongs_to_start_date(self):
+        item = self._item(start_time="13:00", end_time="04:00", start_day=1, end_day=15)
+        self.assertFalse(shift.keepalive_window(item, _at(3, day=1))[0], "凌晨归属上月末，不属于 1 日")
+        self.assertTrue(shift.keepalive_window(item, _at(13, day=1))[0])
+        self.assertTrue(shift.keepalive_window(item, _at(3, 59, day=16))[0], "15 日的窗口延续到 16 日凌晨")
+        self.assertFalse(shift.keepalive_window(item, _at(4, day=16))[0])
+        self.assertFalse(shift.keepalive_window(item, _at(13, day=16))[0])
+        self.assertIn("按开始日期", shift.keepalive_window(item, _at(3, day=16))[1])
+
+    def test_overnight_month_and_year_boundaries(self):
+        item = self._item(start_time="22:00", end_time="04:00", start_day=31, end_day=31)
+        for year, month, day in [(2027, 1, 1), (2026, 2, 1), (2026, 3, 1),
+                                 (2028, 3, 1), (2026, 5, 1)]:
+            with self.subTest(year=year, month=month):
+                now = dt.datetime(year, month, day, 3, 59, tzinfo=TZ)
+                self.assertTrue(shift.keepalive_window(item, now)[0], "上月末的窗口持续到本月 1 日凌晨")
+                self.assertFalse(shift.keepalive_window(item, now.replace(hour=4, minute=0))[0])
+                self.assertFalse(shift.keepalive_window(item, now.replace(day=2))[0])
+
+    def test_midnight_start_is_same_day(self):
+        item = self._item(start_time="00:00", end_time="04:00", start_day=1, end_day=1)
+        self.assertTrue(shift.keepalive_window(item, _at(0, day=1))[0])
+        self.assertFalse(shift.keepalive_window(item, _at(4, day=1))[0])
+        self.assertFalse(shift.keepalive_window(item, _at(3, day=2))[0])
+
+    def test_invalid_dimension_preserves_other_limit(self):
+        item = self._item(start_time="bad", end_time="04:00", start_day=1, end_day=15)
+        self.assertFalse(shift.keepalive_window(item, _at(13, day=16))[0])
+        item = self._item(start_time="13:00", end_time="04:00", start_day="bad", end_day=15)
+        self.assertFalse(shift.keepalive_window(item, _at(12))[0])
+
     def test_day_window(self):
         item = self._item(start_day=1, end_day=15)
         self.assertTrue(shift.keepalive_window(item, _at(12, day=1))[0])
@@ -107,10 +146,11 @@ class WindowMath(unittest.TestCase):
         self.assertTrue(shift.keepalive_window(item, _at(12, day=31, month=5))[0])
 
     def test_broken_config_falls_back_to_unlimited(self):
-        """半截 / 跨零点配置按「不限」处理：宁可多跑，也别把机器钉死在停机。"""
+        """损坏配置按「不限」处理；跨零点现在是合法时段。"""
         for item in (
             self._item(start_time="08:00"),  # 只有开始
-            self._item(start_time="23:00", end_time="06:00"),  # 跨零点
+            self._item(start_time="13:00", end_time="13:00"),  # 零长度
+            self._item(start_time="00:00", end_time="00:00"),
             self._item(start_time="oops", end_time="23:00"),  # 格式错
             self._item(start_day=10),  # 只有开始日
             self._item(start_day=20, end_day=5),  # 跨月
@@ -222,6 +262,26 @@ class KeepaliveWindowEngine(unittest.TestCase):
         return [str(step.get("text")) for step in event["progress"]]
 
     # -- 窗口外 ---------------------------------------------------------
+
+    def test_overnight_shutdown_and_resume_cycle(self):
+        """凌晨 4 点停机、中午 13 点恢复，跨午夜不误停，整段休止不误拉起。"""
+        self._keepalive(start_time="13:00", end_time="04:00")
+        self._tick(_at(3, 59))
+        self.assertEqual(self.stopped, [])
+        self._tick(_at(4, 0))
+        self.assertEqual(self.stopped, [("StopCharging", True)])
+        self._confirm()
+        self.assertEqual(self._events()[0]["detail"], "已暂停（节省停机）")
+        self._tick(_at(12, 59))
+        self.assertEqual(self.started, [])
+        self.assertEqual(len(self.stopped), 1)
+        self._tick(_at(13, 0))
+        self.assertEqual(self.started, [self.server_id])
+        self.state = "Running"
+        self._confirm()
+        self._tick(_at(0, 0, day=16))
+        self.assertEqual(len(self.stopped), 1, "次日午夜仍应运行")
+        self.assertEqual(self.sent, [], "计划启停不触发抢占恢复通知")
 
     def test_outside_window_stops_and_logs_pause(self):
         self._keepalive(start_time="08:00", end_time="23:00")

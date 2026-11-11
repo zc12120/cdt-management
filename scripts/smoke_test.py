@@ -126,7 +126,24 @@ check("00:00 原样存回", item["end_time"] == "00:00", str(item))
 status, body = call(
     "POST", f"/api/v1/keepalives/{keepalive_id}", {"enabled": True, "start_time": "23:00", "end_time": "06:00"}
 )
-check("跨零点时段被拒", status == 400, f"HTTP {status} {body}")
+check("跨零点时段可保存", status == 200, f"HTTP {status} {body}")
+item = call("GET", "/api/v1/keepalives")[1]["items"][0]
+check("跨零点时段原样读回", (item["start_time"], item["end_time"]) == ("23:00", "06:00"), str(item))
+status, body = call(
+    "POST", f"/api/v1/keepalives/{keepalive_id}",
+    {"enabled": True, "start_time": "13:00", "end_time": "04:00"},
+)
+check("保存下午到次日凌晨的窗口", status == 200, f"HTTP {status} {body}")
+status, body = call(
+    "POST", f"/api/v1/keepalives/{keepalive_id}",
+    {"enabled": True, "start_time": "13:00", "end_time": "13:00"},
+)
+check("相同起止时刻被拒", status == 400, f"HTTP {status} {body}")
+status, body = call(
+    "POST", f"/api/v1/keepalives/{keepalive_id}",
+    {"enabled": True, "start_time": "00:00", "end_time": "00:00"},
+)
+check("全天必须用不限而非相同时刻", status == 400, f"HTTP {status} {body}")
 status, body = call(
     "POST", f"/api/v1/keepalives/{keepalive_id}", {"enabled": True, "start_time": "08:00"}
 )

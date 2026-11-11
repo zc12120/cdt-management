@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: '22'
       - run: pip install --require-hashes -r requirements-dev.lock
-      - run: npm ci --ignore-scripts && npm run build
+      - run: npm ci --ignore-scripts && npm test && npm run build
         working-directory: web
       - run: python scripts/run_checks.py
   image:
