@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 
-from . import aliyun, db as dbmod, ddns, dns, messages, notify, repo, settings
+from . import aliyun, db as dbmod, ddns, dns, messages, notify, policy, repo, settings
 
 from .scheduling import (
     _TZ_CACHE,
@@ -67,6 +67,7 @@ _SETTLED_LIKE_PHASES = (PHASE_SETTLED, PHASE_FAILOVER, PHASE_MANUAL, PHASE_BREAK
 ORIGIN_NEW_GROUP = "new_group"
 
 TRANSIENT_STATUS = {"Starting", "Pending", "Stopping"}
+TRAFFIC_STOP_COOLDOWN = 30
 
 # 换班组事件的全部 kind。组停用 / 排不出当班时按这份清单收尾，
 # 否则「换班进行中」会一直转圈，直到 14 天清理才消失。
@@ -427,21 +428,31 @@ class Engine:
 
             # 流量超限 → 按实例停机模式停机并暂停保活，不再无脑拉起。
             # 这是 1.1.15 补上的功能：之前单机保活只判断「停了就拉」，从不看阈值，
-            # 机器超了阈值还在烧流量。停一次打一个 limit_stop 标记，标记在就不再
-            # 碰它（否则下轮又被拉起）；流量回落到阈值以下（包重置 / 调高阈值）后
-            # 自动清标记、恢复保活。
-            if _over_threshold(server):
-                if self._limit_stop_server(server_id, server, config, messages.SCOPE_KEEPALIVE):
-                    results.append({"keepalive": server_id, "over_limit": True})
+            # 机器超了阈值还在烧流量。标记仅去重通知，每轮仍按真实状态确保停机；
+            # 流量回落到阈值以下且读数可用后清标记，恢复保活。
+            over = _over_threshold(server)
+            unavailable = policy.traffic_unavailable(server, time.time(), settings.TRAFFIC_MAX_AGE)
+            if over or unavailable:
+                if self._limit_stop_server(
+                    server_id, server, config, messages.SCOPE_KEEPALIVE,
+                    unavailable=unavailable and not over,
+                ):
+                    results.append({
+                        "keepalive": server_id,
+                        "traffic_unavailable" if unavailable and not over else "over_limit": True,
+                    })
                 # 超限期间保活是暂停的：正在转的「保活拉起」必须当场收掉，否则它
                 # 永远 running（确认器对保活不设超时），流量回落后还会被继续续写。
-                _close_keepalive_event(server_id, label, "流量超限，已停机并暂停保活")
+                _close_keepalive_event(
+                    server_id, label,
+                    "流量读数失效，费用保护已暂停保活" if unavailable and not over
+                    else "流量超限，已暂停保活并等待停机",
+                )
                 # 超限停机的机器不再走「停了就拉」：流量回落前它就该保持停机。
                 continue
             # 流量回落到阈值以下（流量包重置 / 调高阈值）：清掉超限标记，
             # 恢复正常的「停了就拉」。否则标记会永久钉住这台机器。
-            if repo.get_flag(f"limit_stop:{messages.SCOPE_KEEPALIVE}:{server_id}"):
-                repo.clear_flag(f"limit_stop:{messages.SCOPE_KEEPALIVE}:{server_id}")
+            _clear_traffic_stop_flags(server_id, messages.SCOPE_KEEPALIVE)
 
             status = str(server.get("instance_status") or "")
             # 刚从休止时段回来：先记一条「单机保活窗口恢复中」，开机指令也在这里发。
@@ -611,34 +622,54 @@ class Engine:
         server: dict[str, Any],
         config: dict[str, str],
         scope: str,
+        *,
+        unavailable: bool = False,
+        group_id: int = 0,
     ) -> bool:
-        """单台机器超限：节省停机一次 + 打标记 + 推报告。返回是否真的发了指令。
-
-        标记 key 里带 scope，保活和闲散各记各的（同一台机器不会同时处于两种状态，
-        但分开写更清楚，也避免一种范围的清除误伤另一种）。
-        """
-        flag = f"limit_stop:{scope}:{server_id}"
-        if repo.get_flag(flag):
+        """Converge to Stopped; flags deduplicate reports, never enforcement."""
+        kind = "traffic_guard_stop" if unavailable else "limit_stop"
+        flag = f"{kind}:{scope}:{server_id}"
+        notified = bool(repo.get_flag(flag))
+        stopped_already = _is_stopped_any_mode(server)
+        stamp = f"{kind}_cmd:{scope}:{server_id}"
+        if stopped_already:
+            repo.clear_flag(stamp)
+        if stopped_already and notified:
             return False
 
-        # 已经物理停机（含不支持节省停机的 Not-applicable）就不重发指令
+        # Let cloud transitions settle. A Running instance is retried even when
+        # an earlier request was accepted or its confirmation already timed out.
+        if not stopped_already and str(server.get("instance_status") or "") in TRANSIENT_STATUS:
+            return False
+        if not stopped_already and 0 <= repo.flag_age(stamp) < TRAFFIC_STOP_COOLDOWN:
+            return False
+        pending = repo.pending_event(server_id, kind)
         mode = str(server.get("stopped_mode") or "")
-        if not _is_stopped_any_mode(server):
+        if not stopped_already:
             try:
                 mode = stop_server_by_pref(server)
             except Exception as exc:  # noqa: BLE001
-                err = f"limit_stop_err:{scope}:{server_id}"
+                err = f"{kind}_err:{scope}:{server_id}"
                 if not repo.get_flag(err):
                     repo.set_flag(err)
                     repo.add_event(
                         "error",
-                        messages.ev("流量超限停机失败", messages.obj_server(str(server.get('label') or ''))),
+                        messages.ev(
+                            "费用保护停机失败" if unavailable else "流量超限停机失败",
+                            messages.obj_server(str(server.get('label') or '')),
+                        ),
                         aliyun.brief_error(exc),
                         level="error",
                         server_id=server_id,
+                        group_id=group_id,
                     )
+                if pending:
+                    repo.add_event_progress(int(pending["id"]), f"重试停机失败：{aliyun.brief_error(exc)}")
                 return False
-            repo.clear_flag(f"limit_stop_err:{scope}:{server_id}")
+            finally:
+                repo.clear_flag(stamp)
+                repo.set_flag(stamp)
+            repo.clear_flag(f"{kind}_err:{scope}:{server_id}")
 
         repo.set_flag(flag)
         # 标题与通知口径一致：单机保活还要说明保活已暂停，否则事件只说「已停机」，
@@ -648,20 +679,34 @@ class Engine:
         if scope == messages.SCOPE_KEEPALIVE:
             tail = "保活已暂停"
         else:
-            tail = messages.stop_phrase(mode)
-        reason = f"已用 {_used_gb(server):.2f} GB（阈值 {float(server.get('threshold_gb') or 0):g} GB）"
-        stopped_already = _is_stopped_any_mode(server)
-        event_id = repo.add_event(
-            "limit_stop",
-            messages.ev(f"流量超限，{tail}", messages.obj_server(str(server.get('label') or ''))),
-            f"等待停机到位 / {reason}",
-            level="warning",
-            server_id=server_id,
-            status="running",
-            pending_status="Stopped",
-            pending_kind="limit_stop",
+            tail = messages.stop_phrase(mode) if stopped_already else "等待停机确认"
+        reason = (
+            "流量未知或读数已过期，费用保护暂停运行"
+            if unavailable else
+            f"已用 {_used_gb(server):.2f} GB（阈值 {float(server.get('threshold_gb') or 0):g} GB）"
         )
-        repo.add_event_progress(event_id, f"已用 {_used_gb(server):.2f} GB，超过阈值 {float(server.get('threshold_gb') or 0):g} GB")
+        if pending:
+            event_id = int(pending["id"])
+            repo.add_event_progress(event_id, "实例仍未停稳，重新下发停机指令")
+        else:
+            event_id = repo.add_event(
+                kind,
+                messages.ev(
+                    f"流量读数失效，{tail}" if unavailable else f"流量超限，{tail}",
+                    messages.obj_server(str(server.get('label') or '')),
+                ),
+                f"等待停机到位 / {reason}",
+                level="warning",
+                server_id=server_id,
+                group_id=group_id,
+                status="running",
+                pending_status="Stopped",
+                pending_kind=kind,
+            )
+            repo.add_event_progress(
+                event_id, reason if unavailable else
+                f"已用 {_used_gb(server):.2f} GB，超过阈值 {float(server.get('threshold_gb') or 0):g} GB",
+            )
         # 已经停着的机器没有「下发指令」这一步，写清楚，别让过程看起来断了一截
         repo.add_event_progress(
             event_id,
@@ -670,8 +715,12 @@ class Engine:
             else f"已下发停机指令（{messages.mode_label(mode)}）",
         )
         # 事件等到 Stopped 才由确认器收尾：指令下发 ≠ 真停了，这里不能先写「已完成」
-        if config.get("notify_on_limit_stop") == "1":
-            results = notify.send_all(config, messages.over_limit(server, scope, mode=mode))
+        if not notified and config.get("notify_on_limit_stop") == "1":
+            message = (
+                messages.traffic_guard_stop(server, scope, mode=mode, pending=not stopped_already)
+                if unavailable else messages.over_limit(server, scope, mode=mode, pending=not stopped_already)
+            )
+            results = notify.send_all(config, message)
             notify.note_notify(event_id, results)
         return True
 
@@ -713,12 +762,19 @@ class Engine:
                 title=messages.ev("状态读取已恢复", messages.obj_server(label)),
                 tz_name=tz_name,
             )
-            if _over_threshold(server):
-                if self._limit_stop_server(server_id, server, config, messages.SCOPE_IDLE):
-                    results.append({"idle": server_id, "over_limit": True})
-            elif repo.get_flag(f"limit_stop:{messages.SCOPE_IDLE}:{server_id}"):
-                # 流量回落：清标记，之后这台机器再超限还能再停
-                repo.clear_flag(f"limit_stop:{messages.SCOPE_IDLE}:{server_id}")
+            over = _over_threshold(server)
+            unavailable = policy.traffic_unavailable(server, time.time(), settings.TRAFFIC_MAX_AGE)
+            if over or unavailable:
+                if self._limit_stop_server(
+                    server_id, server, config, messages.SCOPE_IDLE,
+                    unavailable=unavailable and not over,
+                ):
+                    results.append({
+                        "idle": server_id,
+                        "traffic_unavailable" if unavailable and not over else "over_limit": True,
+                    })
+            else:
+                _clear_traffic_stop_flags(server_id, messages.SCOPE_IDLE)
         return results
 
     # ==================================================================
@@ -836,7 +892,10 @@ class Engine:
         breaker = False
         breaker_reason = ""
         if _over_threshold(duty) and group.get("failover_enabled") and not duty_error:
-            candidates = [s for s in healthy_others if not _over_threshold(s)]
+            candidates = [
+                s for s in healthy_others
+                if policy.may_start(s, time.time(), settings.TRAFFIC_MAX_AGE).allowed
+            ]
             if candidates:
                 replacement = min(candidates, key=lambda s: float(s.get("traffic_used") or 0))
                 # 决策和结果写进同一条事件：这条先以「进行中」建出来，后续启动、
@@ -895,6 +954,8 @@ class Engine:
                     breaker_reason = "其他成员状态读取失败，无法确认可接班的成员"
                 elif len(healthy_others) < len(others):
                     breaker_reason = "可读取的成员流量均已超限，其余成员状态读取失败"
+                elif any(policy.traffic_unavailable(s, time.time(), settings.TRAFFIC_MAX_AGE) for s in healthy_others):
+                    breaker_reason = "其他成员流量已超限或读数过期，无法安全接班"
                 else:
                     breaker_reason = "全部成员流量超限"
 
@@ -905,6 +966,23 @@ class Engine:
 
         if _over_threshold(duty) and not failover:
             return self._handle_limit_stop(group, config, now, slot_key, duty, others, notify_enabled)
+
+        # A stale traffic reading also constrains running group members. Pause
+        # this duty until readings recover; never select a stale replacement.
+        traffic_guarded: set[int] = set()
+        for member in [duty, *healthy_others]:
+            member_id = int(member["id"])
+            if policy.traffic_unavailable(member, time.time(), settings.TRAFFIC_MAX_AGE):
+                traffic_guarded.add(member_id)
+                self._limit_stop_server(
+                    member_id, member, config, messages.SCOPE_GROUP,
+                    unavailable=True, group_id=group_id,
+                )
+            else:
+                _clear_traffic_stop_flags(member_id, messages.SCOPE_GROUP, kinds=("traffic_guard_stop",))
+        if int(duty["id"]) in traffic_guarded:
+            _close_group_events(group_id, "流量读数失效，费用保护暂停当班")
+            return {"group_id": group_id, "traffic_unavailable": True, "ready": False}
 
         # 抢占恢复跨多轮，用 flag 记住「这次是恢复而不是换班」（本地变量活不过一轮）；
         # event_id 是本班次正在进行的那条事件，后面「起不来」要复用它改成故障转移结论。
@@ -983,7 +1061,8 @@ class Engine:
                 candidates = [
                     s
                     for s in healthy_others
-                    if int(s["id"]) not in tried and not _over_threshold(s)
+                    if int(s["id"]) not in tried
+                    and policy.may_start(s, time.time(), settings.TRAFFIC_MAX_AGE).allowed
                 ]
                 status_text = messages.STATUS_LABELS.get(
                     str(duty.get("instance_status") or ""), str(duty.get("instance_status") or "未知")
@@ -1225,6 +1304,9 @@ class Engine:
                 all_stopped = False
                 continue
             if _is_stopped_any_mode(server):
+                continue
+            if int(server["id"]) in traffic_guarded:
+                all_stopped = False
                 continue
             if server.get("instance_status") in TRANSIENT_STATUS:
                 # 已在停机过程中，等它落地。
@@ -2502,6 +2584,15 @@ def _over_threshold(server: dict[str, Any]) -> bool:
         return False
     threshold = float(server.get("threshold_gb") or 0)
     return threshold > 0 and float(used) >= threshold
+
+
+def _clear_traffic_stop_flags(
+    server_id: int, scope: str,
+    *, kinds: tuple[str, ...] = ("limit_stop", "traffic_guard_stop"),
+) -> None:
+    for kind in kinds:
+        for suffix in ("", "_cmd", "_err"):
+            repo.clear_flag(f"{kind}{suffix}:{scope}:{server_id}")
 
 
 def _used_gb(server: dict[str, Any]) -> float:

@@ -268,10 +268,10 @@ export default function ServerDialog({
         <label htmlFor="traffic-policy">流量查询异常时</label>
         <select id="traffic-policy" className="input" value={form.traffic_policy}
           onChange={(event) => update('traffic_policy', event.target.value)}>
-          <option value="cost_guard">费用优先：读数过期后暂停自动开机</option>
+          <option value="cost_guard">费用优先：读数过期后停机并暂停自动开机</option>
           <option value="availability">可用性优先：继续恢复，可能产生额外流量费</option>
         </select>
-        <div className="hint">已知超限时两种策略都会停止恢复；流量是账号累计值，不是这台实例独占额度。</div>
+        <div className="hint">费用优先允许短暂查询失败，旧读数过期后停机（默认有效期15分钟）；读数恢复后按运行窗口恢复保活。已知超限时两种策略都会停机；流量是账号累计值，不是这台实例独占额度。</div>
       </div>
 
       {error && (

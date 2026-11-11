@@ -507,7 +507,10 @@ def limit_stop(
     )
 
 
-def over_limit(server: dict[str, Any], scope: str, mode: str | None = None) -> notify.Message:
+def over_limit(
+    server: dict[str, Any], scope: str, mode: str | None = None,
+    *, pending: bool = False,
+) -> notify.Message:
     """🚨 超限停机：单机保活 / 闲散手动的机器到阈值，被迫停机。
 
     标题不叫「全局熔断」——那套说的是换班组里「没得换所以全停」，单机场景
@@ -519,13 +522,17 @@ def over_limit(server: dict[str, Any], scope: str, mode: str | None = None) -> n
     # 用户看不出这台是省钱停了还是照常计费，和事件标题「流量超限，已节省停机」也对不上。
     stopped = stop_phrase(mode if mode is not None else server.get("stopped_mode"))
     paused = f"{stopped}，并暂停保活" if scope == SCOPE_KEEPALIVE else stopped
+    headline = (
+        "流量已到阈值，已请求停机并暂停自动开机；等待云状态确认。"
+        if pending else f"流量已到阈值，{paused}，不再自动开机。"
+    )
     return _titled(
         "limit_stop",
         "🚨",
         title_of("超限停机", scope=scope),
         "\n".join(
             [
-                f"流量已到阈值，{paused}，不再自动开机。",
+                headline,
                 "流量回落到阈值以下（流量包重置或调高阈值）后自动恢复。",
                 "",
                 f"🖥 {_label(server)}",
@@ -537,6 +544,23 @@ def over_limit(server: dict[str, Any], scope: str, mode: str | None = None) -> n
                 SEP,
             ]
         ),
+    )
+
+
+def traffic_guard_stop(
+    server: dict[str, Any], scope: str, mode: str | None = None,
+    *, pending: bool = False,
+) -> notify.Message:
+    state = "已请求停机，等待云状态确认" if pending else stop_phrase(mode)
+    return _titled(
+        "traffic_guard_stop", "🚨", title_of("费用保护停机", scope=scope),
+        "\n".join([
+            f"流量未知或读数已过期，{state}，自动开机已暂停。",
+            "读数恢复且未超限后，保活按运行窗口恢复。",
+            "", f"🖥 {_label(server)}",
+            f"┃ 📦 实例：<code>{_instance(server)}</code>",
+            f"┃ 🌐 ＩＰ：{_ip(server)}", SEP,
+        ]),
     )
 
 

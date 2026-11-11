@@ -332,7 +332,7 @@ class KeepaliveEventLifecycle(unittest.TestCase):
         closed = [e for e in events if e["kind"] == "keepalive_pause"]
         self.assertTrue(closed, [e["title"] for e in events])
         self.assertEqual(closed[0]["status"], "done")
-        self.assertEqual(closed[0]["detail"], "流量超限，已停机并暂停保活")
+        self.assertEqual(closed[0]["detail"], "流量超限，已暂停保活并等待停机")
         # 主动停机是预期动作，不留红色告警图标
         self.assertEqual(closed[0]["level"], "info")
         # 计数归零：流量回落后重新拉起，从第 1 次开始数
