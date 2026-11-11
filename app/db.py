@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS keepalives (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id  INTEGER NOT NULL UNIQUE,
     enabled    INTEGER NOT NULL DEFAULT 1,
-    -- 每天允许运行的时段：start_time ≤ now < end_time，必须同一天内（不跨零点）。
+    -- 每天允许运行的时段；结束早于开始表示跨天，凌晨归属开始日期。
     -- 两项都空 = 全天。
     start_time TEXT    NOT NULL DEFAULT '',
     end_time   TEXT    NOT NULL DEFAULT '',
