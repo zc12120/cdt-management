@@ -61,7 +61,7 @@ class DecimalTraffic(unittest.TestCase):
         # numeric readings and limits have not yet undergone the unit migration.
         upgrade(conn)
         conn.execute("DELETE FROM schema_migrations WHERE version=2")
-        for sid, used in [(1, 174), (2, 181), (3, None)]:
+        for sid, used in [(1, 160), (2, 174), (3, None)]:
             conn.execute(
                 "INSERT INTO servers(id,label,access_key_id,access_key_secret,region_id,instance_id,"
                 "quota_gb,threshold_gb,traffic_used,traffic_checked_at,traffic_error) "
@@ -70,14 +70,15 @@ class DecimalTraffic(unittest.TestCase):
             )
         conn.execute(
             "INSERT INTO cloud_accounts(id,traffic_used,traffic_checked_at,traffic_cycle) "
-            "VALUES('account-1',174,123,'2026-11')"
+            "VALUES('account-1',160,123,'2026-11')"
         )
         conn.execute(
-            "INSERT INTO traffic_samples(server_id,ts,used,status) VALUES(1,123,174,'Running')"
+            "INSERT INTO traffic_samples(server_id,ts,used,status) VALUES(1,123,160,'Running')"
         )
+        conn.execute("UPDATE servers SET quota_gb=500,threshold_gb=450 WHERE id=3")
         return conn, path, key
 
-    def test_upgrade_preserves_bytes_history_freshness_and_stop_decisions_once(self):
+    def test_upgrade_preserves_gb_limits_and_converts_measured_gib_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn, path, key = self.legacy_database(tmp)
             try:
@@ -90,16 +91,19 @@ class DecimalTraffic(unittest.TestCase):
                     "SELECT quota_gb,threshold_gb,traffic_used,traffic_checked_at,traffic_error "
                     "FROM servers WHERE id=1"
                 ).fetchone()
-                self.assertAlmostEqual(first[0], 214.7483648)
-                self.assertAlmostEqual(first[1], 193.27352832)
-                self.assertAlmostEqual(first[2] * 1_000_000_000, 174 * 1024**3, delta=0.001)
+                self.assertEqual(first[0], 200)
+                self.assertEqual(first[1], 180)
+                self.assertAlmostEqual(first[2] * 1_000_000_000, 160 * 1024**3, delta=0.001)
                 self.assertEqual(first[3:], (123, "stale reading"))
                 self.assertIsNone(conn.execute("SELECT traffic_used FROM servers WHERE id=3").fetchone()[0])
-                for sid, was_over in [(1, False), (2, True)]:
+                self.assertEqual(conn.execute("SELECT quota_gb,threshold_gb FROM servers WHERE id=3").fetchone(), (500,450))
+                # 174 GiB is over the configured 180 GB, even though the old
+                # mixed-unit comparison incorrectly considered it below 180.
+                for sid, is_over in [(1, False), (2, True)]:
                     used, threshold = conn.execute(
                         "SELECT traffic_used,threshold_gb FROM servers WHERE id=?", (sid,)
                     ).fetchone()
-                    self.assertEqual(used >= threshold, was_over)
+                    self.assertEqual(used >= threshold, is_over)
                 self.assertEqual(
                     conn.execute("SELECT traffic_used,traffic_checked_at,traffic_cycle FROM cloud_accounts").fetchone(),
                     (first[2], 123, "2026-11"),
@@ -109,7 +113,7 @@ class DecimalTraffic(unittest.TestCase):
                 self.assertEqual(len(backups), 1)
                 self.assertEqual((backups[0] / "master.key").read_bytes(), key.read_bytes())
                 with sqlite3.connect(backups[0] / "cdt-management.db") as saved:
-                    self.assertEqual(saved.execute("SELECT traffic_used FROM servers WHERE id=1").fetchone()[0], 174)
+                    self.assertEqual(saved.execute("SELECT traffic_used FROM servers WHERE id=1").fetchone()[0], 160)
             finally:
                 conn.close()
 
@@ -126,8 +130,8 @@ class DecimalTraffic(unittest.TestCase):
                 ):
                     with self.assertRaises(sqlite3.IntegrityError):
                         upgrade(conn)
-                    self.assertEqual(conn.execute("SELECT traffic_used FROM servers WHERE id=1").fetchone()[0], 174)
-                    self.assertEqual(conn.execute("SELECT traffic_used FROM cloud_accounts").fetchone()[0], 174)
+                    self.assertEqual(conn.execute("SELECT traffic_used FROM servers WHERE id=1").fetchone()[0], 160)
+                    self.assertEqual(conn.execute("SELECT traffic_used FROM cloud_accounts").fetchone()[0], 160)
                     self.assertIsNone(conn.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone())
                     conn.execute("DROP TRIGGER fail_sample")
                     upgrade(conn)

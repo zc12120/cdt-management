@@ -18,11 +18,14 @@ spending cap. For secure publication use the production deployment instructions.
 
 From 1.4.1, metered usage, quotas, thresholds and API traffic values all use
 decimal GB (1 GB = 1,000,000,000 bytes). The account overview field is `total_gb`.
-On upgrade, schema 2 converts previous GiB readings, historical samples, account
-caches and limits together, preserving their byte values and stop decisions.
-For example, an existing 180 GiB limit becomes 193.27352832 GB; edit it to 185 GB
-if that is the desired new limit. Migration runs once and retains a database/key
-backup. Roll back with the matching pre-migration database, key and old image.
+On upgrade, schema 2 converts previous measured GiB readings, historical samples
+and account caches, preserving their byte values. Configured quotas and thresholds
+already represent GB and stay unchanged: a 200 GB allowance remains 200 GB.
+Migration runs once and retains a database/key backup. Version 1.4.2 fixes the
+1.4.1 migration that incorrectly inflated configured limits. If 1.4.1 already
+migrated a database, restore its intended quotas and thresholds through the API;
+usage must not be converted again. Roll back with the matching database, key and
+old image.
 
 ---
 

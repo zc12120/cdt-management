@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS servers (
     -- 具体解析在 aliyun.py 的 _endpoints()。先存着，将来接账单接口不用再迁库。
     site                TEXT    NOT NULL DEFAULT 'china',
     instance_id         TEXT    NOT NULL,
-    -- 流量、配额和阈值统一使用十进制 GB（10^9 字节）；旧 GiB 数据由 schema 2 迁移。
+    -- 流量、配额和阈值统一使用十进制 GB（10^9 字节）；schema 2只迁移旧GiB用量，保留配置额度。
     quota_gb            REAL    NOT NULL DEFAULT 200,
     threshold_gb        REAL    NOT NULL DEFAULT 188,
     remark              TEXT    NOT NULL DEFAULT '',

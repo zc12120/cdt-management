@@ -94,11 +94,10 @@ def _upgrade_credentials(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_decimal_traffic(conn: sqlite3.Connection) -> None:
-    """Convert every numeric GiB snapshot/limit once, preserving its byte value.
+    """Convert measured GiB snapshots once, preserving their byte values.
 
-    New readings and user inputs are decimal GB. Existing limits are converted
-    with the readings so an upgrade alone cannot change the stop decision;
-    an operator can then set a new limit through the normal application API.
+    Quotas and thresholds are operator-configured GB amounts, not measured
+    GiB readings. Preserve them verbatim; a 200 GB allowance remains 200 GB.
     Historical event/notification text is an immutable record, not metering data.
     """
     if conn.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone():
@@ -112,8 +111,8 @@ def _upgrade_decimal_traffic(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            "UPDATE servers SET quota_gb=quota_gb*?, threshold_gb=threshold_gb*?, traffic_used=traffic_used*?",
-            (factor, factor, factor),
+            "UPDATE servers SET traffic_used=traffic_used*?",
+            (factor,),
         )
         conn.execute("UPDATE cloud_accounts SET traffic_used=traffic_used*?", (factor,))
         conn.execute("UPDATE traffic_samples SET used=used*?", (factor,))
