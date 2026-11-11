@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 APP_NAME = "cdt-management"
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 DATA_DIR = Path(os.environ.get("CDT_DATA_DIR", "./data")).resolve()
 DB_PATH = DATA_DIR / "cdt-management.db"
@@ -26,7 +26,7 @@ BRAND = os.environ.get("CDT_BRAND", "CDT-Management")
 # 「关于」里检查更新用的仓库
 REPO = os.environ.get("CDT_REPO", "zc12120/cdt-management")
 
-# 对账间隔（秒）。低于 30 秒会打爆阿里云 API 配额。
+# 对账间隔（秒）。30 秒是本程序的下限，实际 API 配额由账号、地域和接口决定。
 RECONCILE_INTERVAL = max(30, int(os.environ.get("CDT_RECONCILE_INTERVAL", "60")))
 
 # 单次阿里云 / HTTP 调用超时

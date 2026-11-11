@@ -423,7 +423,7 @@ def _confirm_pending_events(now_ts: float | None = None) -> None:
                 # 这条事件的语义是「保活暂停」，结论就该写「已暂停」，
                 # 与手动停机的「已停止」区分开
                 summary = f"已暂停（{messages.mode_label(info.stopped_mode) or '停机'}）"
-            elif pending_kind == "limit_stop":
+            elif pending_kind in ("limit_stop", "traffic_guard_stop"):
                 # 超限停机事件原本只有原因（已用多少 / 阈值多少），
                 # 收尾时补上真实结果，而不是只说「下发过指令」。
                 # 进行中的概览是「等待停机到位 / 原因」，这里要把等待那一段摘掉，
