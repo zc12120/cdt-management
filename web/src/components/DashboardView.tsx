@@ -64,7 +64,7 @@ export default function DashboardView({
   // 后端一次给最近 20 条，先露 8 条，剩下的点「显示更多事件」再展开
   const [eventCount, setEventCount] = useState(RECENT_EVENT_PAGE)
   const running = overview.servers.filter((server) => server.instance_status === 'Running').length
-  const totalTraffic = overview.account_usage?.total_gib ?? 0
+  const totalTraffic = overview.account_usage?.total_gb ?? 0
   const alarms = overview.servers.filter(
     // 和后端 shift._over_threshold 同一口径：阈值没配（0）的机器不算超限。
     // 少了 threshold_gb > 0，0 >= 0 永远成立，概览会报「N 台超阈值」而引擎根本不动作。
@@ -184,7 +184,7 @@ export default function DashboardView({
             </span>
             <span className="value">
               {totalTraffic.toFixed(1)}
-              <em>GiB</em>
+              <em>GB</em>
             </span>
             <span className="sub">{overview.account_usage?.unresolved_instances ? `${overview.account_usage.unresolved_instances} 台账号尚未确认` : alarms > 0 ? `${alarms} 台超阈值` : '按已确认账号去重'}</span>
           </div>

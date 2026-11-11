@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 APP_NAME = "cdt-management"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 DATA_DIR = Path(os.environ.get("CDT_DATA_DIR", "./data")).resolve()
 DB_PATH = DATA_DIR / "cdt-management.db"

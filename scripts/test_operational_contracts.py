@@ -151,11 +151,10 @@ class Operations(unittest.TestCase):
             with sqlite3.connect(
                 path / "cdt-management.db", isolation_level=None
             ) as conn:
+                conn.executescript(db.SCHEMA)
                 conn.execute(
-                    "CREATE TABLE servers(id INTEGER PRIMARY KEY,access_key_id TEXT,access_key_secret TEXT,site TEXT)"
-                )
-                conn.execute(
-                    "INSERT INTO servers VALUES(1,'TEST_AK',?,'international')",
+                    "INSERT INTO servers(id,label,access_key_id,access_key_secret,region_id,site,instance_id) "
+                    "VALUES(1,'test','TEST_AK',?,'cn-hongkong','international','i-test')",
                     (security.encrypt("SYNTHETIC_SECRET"),),
                 )
                 with (
@@ -176,9 +175,9 @@ class Operations(unittest.TestCase):
                     conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[
                         0
                     ],
-                    1,
+                    2,
                 )
-                self.assertEqual(len(list((path / "backups").glob("*"))), 1)
+                self.assertEqual(len(list((path / "backups").glob("*"))), 2)
 
     def test_outbox_does_not_send_in_control_path(self):
         outbox.initialize()

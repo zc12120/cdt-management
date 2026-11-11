@@ -64,7 +64,7 @@ def overview(servers: list[dict]) -> dict:
                 values.get(account_id, 0), float(server["traffic_used"])
             )
     return {
-        "total_gib": sum(values.values()),
+        "total_gb": sum(values.values()),
         "verified_accounts": len(values),
         "unresolved_instances": unresolved,
     }

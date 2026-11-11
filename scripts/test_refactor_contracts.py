@@ -134,10 +134,10 @@ class Contracts(unittest.TestCase):
                 {"account_id": "1", "traffic_used": 100},
             ]
         )
-        self.assertEqual(summary["total_gib"], 100)
+        self.assertEqual(summary["total_gb"], 100)
         self.assertEqual(
             accounts.overview([{"account_id": "pending:a", "traffic_used": 100}])[
-                "total_gib"
+                "total_gb"
             ],
             0,
         )

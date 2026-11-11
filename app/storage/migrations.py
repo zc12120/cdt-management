@@ -1,4 +1,4 @@
-"""Additive, transactional upgrades from the upstream schema."""
+"""Transactional schema and unit upgrades, with paired database/key backups."""
 
 from __future__ import annotations
 
@@ -12,6 +12,23 @@ from .. import security, settings
 
 
 def upgrade(conn: sqlite3.Connection) -> None:
+    _upgrade_credentials(conn)
+    _upgrade_decimal_traffic(conn)
+
+
+def _backup(conn: sqlite3.Connection, version: int) -> None:
+    backup = settings.DATA_DIR / "backups" / f"before-schema-{version}-{time.time_ns()}"
+    backup.mkdir(parents=True, mode=0o700)
+    os.chmod(backup, 0o700)
+    with sqlite3.connect(backup / "cdt-management.db") as target:
+        conn.backup(target)
+    os.chmod(backup / "cdt-management.db", 0o600)
+    if settings.MASTER_KEY_PATH.exists():
+        shutil.copyfile(settings.MASTER_KEY_PATH, backup / "master.key")
+        os.chmod(backup / "master.key", 0o600)
+
+
+def _upgrade_credentials(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)"
     )
@@ -19,17 +36,7 @@ def upgrade(conn: sqlite3.Connection) -> None:
         return
     existing = conn.execute("SELECT COUNT(*) FROM servers").fetchone()[0]
     if existing:
-        backup = (
-            settings.DATA_DIR / "backups" / ("before-schema-1-" + str(time.time_ns()))
-        )
-        backup.mkdir(parents=True, mode=0o700)
-        os.chmod(backup, 0o700)
-        with sqlite3.connect(backup / "cdt-management.db") as target:
-            conn.backup(target)
-        os.chmod(backup / "cdt-management.db", 0o600)
-        if settings.MASTER_KEY_PATH.exists():
-            shutil.copyfile(settings.MASTER_KEY_PATH, backup / "master.key")
-            os.chmod(backup / "master.key", 0o600)
+        _backup(conn, 1)
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("""CREATE TABLE IF NOT EXISTS cloud_accounts(
@@ -80,6 +87,37 @@ def upgrade(conn: sqlite3.Connection) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS one_active_control ON control_operations(server_id) WHERE state IN ('reserved','submitted')"
         )
         conn.execute("INSERT INTO schema_migrations VALUES(1,?)", (int(time.time()),))
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _upgrade_decimal_traffic(conn: sqlite3.Connection) -> None:
+    """Convert every numeric GiB snapshot/limit once, preserving its byte value.
+
+    New readings and user inputs are decimal GB. Existing limits are converted
+    with the readings so an upgrade alone cannot change the stop decision;
+    an operator can then set a new limit through the normal application API.
+    Historical event/notification text is an immutable record, not metering data.
+    """
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone():
+        return
+    if any(
+        conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+        for table in ("servers", "cloud_accounts", "traffic_samples")
+    ):
+        _backup(conn, 2)
+    factor = (1024 ** 3) / 1_000_000_000
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE servers SET quota_gb=quota_gb*?, threshold_gb=threshold_gb*?, traffic_used=traffic_used*?",
+            (factor, factor, factor),
+        )
+        conn.execute("UPDATE cloud_accounts SET traffic_used=traffic_used*?", (factor,))
+        conn.execute("UPDATE traffic_samples SET used=used*?", (factor,))
+        conn.execute("INSERT INTO schema_migrations VALUES(2,?)", (int(time.time()),))
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

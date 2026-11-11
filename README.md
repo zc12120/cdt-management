@@ -13,8 +13,16 @@ building `web/`. Cloud actions in checks use isolated dry-run state.
 
 The original documentation below describes upstream features. Metering is now
 account-scoped: **multiple ECS instances in one account do not each receive an
-independent 200 GiB allowance**. Cloud metering is delayed and is not a real-time
+independent 200 GB allowance**. Cloud metering is delayed and is not a real-time
 spending cap. For secure publication use the production deployment instructions.
+
+From 1.4.1, metered usage, quotas, thresholds and API traffic values all use
+decimal GB (1 GB = 1,000,000,000 bytes). The account overview field is `total_gb`.
+On upgrade, schema 2 converts previous GiB readings, historical samples, account
+caches and limits together, preserving their byte values and stop decisions.
+For example, an existing 180 GiB limit becomes 193.27352832 GB; edit it to 185 GB
+if that is the desired new limit. Migration runs once and retains a database/key
+backup. Roll back with the matching pre-migration database, key and old image.
 
 ---
 
@@ -65,7 +73,7 @@ spending cap. For secure publication use the production deployment instructions.
 > 
 >  **交接顺序**：上班准时——到点先把当班实例开机；下班不抢跑——等下一台确认运行中，上一台才停机。
 
-**目的**：通过联合换班，降低多台抢占式实例同时在线的成本，并充分利用每台实例各自的 200G CDT 免费流量包。
+**目的**：通过联合换班，降低多台抢占式实例同时在线的成本，利用各账号适用的 CDT 免费流量；同账号多实例共享用量和额度。
 
 ### 流量保护
 

@@ -458,7 +458,7 @@ def _mock_advance(state: dict[str, Any]) -> None:
 
 
 def get_traffic_gb(account: dict) -> float | None:
-    """CDT 当月出方向流量（GB）。与用户脚本一致：累加所有 TrafficDetails。
+    """CDT 当月流量，单位为十进制 GB（1 GB = 1,000,000,000 字节）。
 
     返回 None 表示「接口调用成功，但一个明细都没给」。不在这里折算成 0.0：
     月初流量包重置后确实是 0，接口抖动时也是空列表，两者在这一层分不开，
@@ -488,7 +488,7 @@ def get_traffic_gb(account: dict) -> float | None:
     except (TypeError, ValueError, AttributeError):
         raise AliyunError('CDT 流量格式异常，未将其当成零流量') from None
     total_bytes = sum(values)
-    return total_bytes / (1024 ** 3)
+    return total_bytes / 1_000_000_000
 
 
 def get_instance(account: dict) -> InstanceInfo:

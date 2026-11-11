@@ -7,8 +7,8 @@ Create the administrator through the loopback API before publishing the website.
 Do not put the administrator password or RAM keys in compose or Git.
 
 `CDT_BASE_PATH` is a random path such as `/random-value`; it is **not a password**.
-Publish only that prefix through a 1Panel-managed TLS site, protect it with Basic
-authentication, and keep the application's own login. All other public paths,
+Publish only that prefix through a 1Panel-managed TLS site, using the application's
+own login as the single authentication step. All other public paths,
 including health endpoints, must return 404. The reverse proxy must preserve the
 prefix, set Host and X-Forwarded-Proto, overwrite X-Forwarded-For, and disable
 access logging and caching for this administrative service. Trust only the exact

@@ -180,7 +180,7 @@ export type EventItem = {
 }
 
 export type Overview = {
-  account_usage?: { total_gib: number; verified_accounts: number; unresolved_instances: number }
+  account_usage?: { total_gb: number; verified_accounts: number; unresolved_instances: number }
   now: string
   now_ts: number
   /** 后端时区下的「YYYY-MM-DD HH:MM」，页面头直接显示，不在前端二次格式化 */
